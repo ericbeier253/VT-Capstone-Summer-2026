@@ -15,9 +15,12 @@ fi
 RUNS_DIR="runs"
 mkdir -p "$RUNS_DIR"
 
-# Generate a timestamped txt filename
+# Generate a timestamped run directory
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-RAW_OUTPUT_FILE="$RUNS_DIR/live_raw_log_$TIMESTAMP.txt"
+RUN_DIR="$RUNS_DIR/run_$TIMESTAMP"
+mkdir -p "$RUN_DIR"
+
+RAW_OUTPUT_FILE="$RUN_DIR/live_raw_log.txt"
 
 echo "========================================="
 echo "🚀 Aria Gen 2 Python 3.12 Environment Active!"
@@ -26,9 +29,9 @@ echo "Starting the Live Gaze Stream Trigger..."
 echo ""
 echo "Intent triggers will be displayed here in real-time."
 echo ""
-echo "The raw eyegaze stream is being continuously logged to:"
-echo "   $RAW_OUTPUT_FILE"
+echo "The current run session data is being logged to:"
+echo "   $RUN_DIR"
 echo "-----------------------------------------"
 
 # Execute the stream processing script
-python3 live_gaze_trigger.py --raw-output "$RAW_OUTPUT_FILE"
+python3 live_gaze_trigger.py --run-dir "$RUN_DIR"

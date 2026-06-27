@@ -1,10 +1,14 @@
 import sys
+import os
 import time
 import argparse
+import threading
 
 import aria.sdk_gen2 as sdk_gen2
 import aria.stream_receiver as receiver
 from projectaria_tools.core.mps import EyeGaze
+from projectaria_tools.core.sensor_data import ImageData, ImageDataRecord
+from PIL import Image
 
 from gaze_trigger import GazeDwellTrigger
 
@@ -12,6 +16,20 @@ from gaze_trigger import GazeDwellTrigger
 raw_file_handle = None
 trigger = None
 trigger_count = 0
+run_dir = None
+
+# Image caching variables
+latest_rgb_image = None
+latest_rgb_timestamp = None
+rgb_lock = threading.Lock()
+
+def image_callback(image_data: ImageData, image_record: ImageDataRecord):
+    global latest_rgb_image, latest_rgb_timestamp
+    np_img = image_data.to_numpy_array()
+    ts = image_record.capture_timestamp_ns / 1e9
+    with rgb_lock:
+        latest_rgb_image = np_img
+        latest_rgb_timestamp = ts
 
 def eyegaze_callback(eyegaze_data: EyeGaze):
     global trigger_count
@@ -29,19 +47,41 @@ def eyegaze_callback(eyegaze_data: EyeGaze):
     if eyegaze_data.combined_gaze_valid:
         if trigger.process_gaze(yaw, pitch, timestamp_sec):
             trigger_count += 1
+            
+            # Save the adjacent image
+            saved_img_path = ""
+            with rgb_lock:
+                if latest_rgb_image is not None and run_dir is not None:
+                    try:
+                        img = Image.fromarray(latest_rgb_image)
+                        filename = f"gaze_trigger_{trigger_count:03d}_{latest_rgb_timestamp:.3f}.jpg"
+                        saved_img_path = os.path.join(run_dir, filename)
+                        img.save(saved_img_path)
+                    except Exception as e:
+                        saved_img_path = f"Error saving: {e}"
+
             log_str = f"[TRIGGER {trigger_count:02d}] 📸 Intent captured at time {timestamp_sec:.3f} s | Gaze Vector -> Yaw: {yaw:.4f} rad, Pitch: {pitch:.4f} rad\n"
+            if saved_img_path:
+                if "Error" in saved_img_path:
+                    log_str += f"   ⚠️ {saved_img_path}\n"
+                else:
+                    log_str += f"   🖼️  Saved image: {saved_img_path}\n"
             print(log_str, end='')
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--raw-output", type=str, required=True, help="Path to the output file for raw data logging")
+    parser.add_argument("--run-dir", type=str, required=True, help="Path to the output directory for this run session")
     args = parser.parse_args()
 
     global raw_file_handle
     global trigger
+    global run_dir
     
-    if args.raw_output:
-        raw_file_handle = open(args.raw_output, "w")
+    run_dir = args.run_dir
+    if run_dir:
+        os.makedirs(run_dir, exist_ok=True)
+        raw_output = os.path.join(run_dir, "live_raw_log.txt")
+        raw_file_handle = open(raw_output, "w")
         raw_file_handle.write("--- Starting Live Raw Eyegaze Logging ---\n")
         raw_file_handle.write("| Timestamp | Yaw | Pitch | Depth | Vergence | Valid Gaze? | Valid Spatial? |\n")
         raw_file_handle.write("|---|---|---|---|---|---|---|\n")
@@ -79,17 +119,18 @@ def main():
     server_config.address = "0.0.0.0"
     server_config.port = 6768
     
-    # Enable only raw stream properties if image decoding isn't needed here
+    # Enable image decoding to receive RGB stream
     stream_receiver = receiver.StreamReceiver(
-        enable_image_decoding=False, 
+        enable_image_decoding=True, 
         enable_raw_stream=False
     )
     stream_receiver.set_server_config(server_config)
     stream_receiver.register_eye_gaze_callback(eyegaze_callback)
+    stream_receiver.register_rgb_callback(image_callback)
     stream_receiver.start_server()
 
     print(f"\n✅ Live streaming is active! Listening for eye gaze events...")
-    print(f"   Writing live raw logs to: {args.raw_output}")
+    print(f"   Writing run session logs and images to: {args.run_dir}")
     print("   Intents will be printed here in the console.")
     print("   Press Ctrl+C to stop.\n")
 
