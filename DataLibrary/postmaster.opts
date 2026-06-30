@@ -1,0 +1,1 @@
+/Applications/Postgres.app/Contents/Versions/18/bin/postgres "-D" "/Users/icemac/Documents/School/Masters/VT-Capstone-Summer-2026/DataLibrary" "-p" "5432"

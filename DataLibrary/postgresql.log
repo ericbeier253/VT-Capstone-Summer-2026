@@ -1,0 +1,39 @@
+2026-06-30 16:53:15.845 EDT [12668] LOG:  starting PostgreSQL 18.4 (Postgres.app) on aarch64-apple-darwin23.6.0, compiled by Apple clang version 15.0.0 (clang-1500.3.9.4), 64-bit
+2026-06-30 16:53:15.846 EDT [12668] LOG:  listening on IPv6 address "::1", port 5432
+2026-06-30 16:53:15.846 EDT [12668] LOG:  listening on IPv4 address "127.0.0.1", port 5432
+2026-06-30 16:53:15.847 EDT [12668] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"
+2026-06-30 16:53:15.849 EDT [12674] LOG:  database system was shut down at 2026-06-30 16:53:15 EDT
+2026-06-30 16:53:15.851 EDT [12668] LOG:  database system is ready to accept connections
+2026-06-30 16:58:15.850 EDT [12672] LOG:  checkpoint starting: time
+2026-06-30 16:59:59.676 EDT [12672] LOG:  checkpoint complete: wrote 1029 buffers (6.3%), wrote 3 SLRU buffers; 1 WAL file(s) added, 0 removed, 0 recycled; write=103.789 s, sync=0.009 s, total=103.827 s; sync files=339, longest=0.001 s, average=0.001 s; distance=4863 kB, estimate=4863 kB; lsn=0/1C46D18, redo lsn=0/1C46C88
+2026-06-30 17:03:15.679 EDT [12672] LOG:  checkpoint starting: time
+2026-06-30 17:03:18.223 EDT [12672] LOG:  checkpoint complete: wrote 25 buffers (0.2%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=2.537 s, sync=0.005 s, total=2.545 s; sync files=27, longest=0.001 s, average=0.001 s; distance=111 kB, estimate=4388 kB; lsn=0/1C62CC0, redo lsn=0/1C62C68
+2026-06-30 17:08:15.224 EDT [12672] LOG:  checkpoint starting: time
+2026-06-30 17:08:15.330 EDT [12672] PANIC:  could not open file "/Users/icemac/Documents/DataLibrary/global/pg_control": No such file or directory
+2026-06-30 17:08:15.331 EDT [12668] LOG:  checkpointer process (PID 12672) was terminated by signal 6: Abort trap: 6
+2026-06-30 17:08:15.331 EDT [12668] LOG:  terminating any other active server processes
+2026-06-30 17:08:15.337 EDT [12668] LOG:  all server processes terminated; reinitializing
+2026-06-30 17:08:15.340 EDT [12668] FATAL:  could not stat data directory "/Users/icemac/Documents/DataLibrary": No such file or directory
+2026-06-30 17:08:15.340 EDT [12668] LOG:  database system is shut down
+2026-06-30 17:09:00.245 EDT [13041] LOG:  starting PostgreSQL 18.4 (Postgres.app) on aarch64-apple-darwin23.6.0, compiled by Apple clang version 15.0.0 (clang-1500.3.9.4), 64-bit
+2026-06-30 17:09:00.247 EDT [13041] LOG:  listening on IPv6 address "::1", port 5432
+2026-06-30 17:09:00.247 EDT [13041] LOG:  listening on IPv4 address "127.0.0.1", port 5432
+2026-06-30 17:09:00.247 EDT [13041] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"
+2026-06-30 17:09:00.251 EDT [13047] LOG:  database system was interrupted; last known up at 2026-06-30 17:03:18 EDT
+2026-06-30 17:09:00.299 EDT [13047] LOG:  database system was not properly shut down; automatic recovery in progress
+2026-06-30 17:09:00.300 EDT [13047] LOG:  redo starts at 0/1C62C68
+2026-06-30 17:09:00.300 EDT [13047] LOG:  invalid record length at 0/1C64A60: expected at least 24, got 0
+2026-06-30 17:09:00.300 EDT [13047] LOG:  redo done at 0/1C649E8 system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+2026-06-30 17:09:00.301 EDT [13045] LOG:  checkpoint starting: end-of-recovery immediate wait
+2026-06-30 17:09:00.302 EDT [13045] LOG:  checkpoint complete: wrote 1 buffers (0.0%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.001 s; sync files=3, longest=0.001 s, average=0.001 s; distance=7 kB, estimate=7 kB; lsn=0/1C64A60, redo lsn=0/1C64A60
+2026-06-30 17:09:00.303 EDT [13041] LOG:  database system is ready to accept connections
+2026-06-30 17:09:54.732 EDT [13064] WARNING:  PID 13011 is not a PostgreSQL backend process
+2026-06-30 17:09:56.159 EDT [13065] WARNING:  PID 12800 is not a PostgreSQL backend process
+2026-06-30 17:11:16.914 EDT [13041] LOG:  received fast shutdown request
+2026-06-30 17:11:16.915 EDT [13041] LOG:  aborting any active transactions
+2026-06-30 17:11:16.915 EDT [13072] FATAL:  terminating connection due to administrator command
+2026-06-30 17:11:16.917 EDT [13041] LOG:  background worker "logical replication launcher" (PID 13050) exited with exit code 1
+2026-06-30 17:11:16.918 EDT [13045] LOG:  shutting down
+2026-06-30 17:11:16.918 EDT [13045] LOG:  checkpoint starting: shutdown immediate
+2026-06-30 17:11:16.920 EDT [13045] LOG:  checkpoint complete: wrote 1 buffers (0.0%), wrote 0 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.002 s; sync files=1, longest=0.001 s, average=0.001 s; distance=8 kB, estimate=8 kB; lsn=0/1C66B68, redo lsn=0/1C66B68
+2026-06-30 17:11:16.923 EDT [13041] LOG:  database system is shut down
