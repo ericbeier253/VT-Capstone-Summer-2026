@@ -3,20 +3,30 @@ import os
 import time
 import argparse
 import threading
+from dataclasses import dataclass
+import pickle
 
 import aria.sdk_gen2 as sdk_gen2
 import aria.stream_receiver as receiver
 from projectaria_tools.core.mps import EyeGaze
 from projectaria_tools.core.sensor_data import ImageData, ImageDataRecord
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from gaze_trigger import GazeDwellTrigger
+
+@dataclass
+class GazeEventRow:
+    timestamp: float
+    depth: float
+    img_path: str
 
 # Global variables for the callback to use
 raw_file_handle = None
 trigger = None
 trigger_count = 0
 run_dir = None
+rgb_cam_calib = None
+cpf_to_rgb = None
 
 # Image caching variables
 latest_rgb_image = None
@@ -30,6 +40,16 @@ def image_callback(image_data: ImageData, image_record: ImageDataRecord):
     with rgb_lock:
         latest_rgb_image = np_img
         latest_rgb_timestamp = ts
+
+def device_calib_callback(calibration):
+    global rgb_cam_calib, cpf_to_rgb
+    if calibration and rgb_cam_calib is None:
+        try:
+            rgb_cam_calib = calibration.get_camera_calib("camera-rgb")
+            cpf_to_rgb = calibration.get_transform_cpf_sensor("camera-rgb")
+            print("Successfully loaded device calibration from stream for gaze overlays.")
+        except Exception as e:
+            print(f"Error extracting camera calibration: {e}")
 
 def eyegaze_callback(eyegaze_data: EyeGaze):
     global trigger_count
@@ -54,6 +74,27 @@ def eyegaze_callback(eyegaze_data: EyeGaze):
                 if latest_rgb_image is not None and run_dir is not None:
                     try:
                         img = Image.fromarray(latest_rgb_image)
+                        
+                        # Draw gaze overlay if valid calibration exists
+                        if eyegaze_data.spatial_gaze_point_valid and rgb_cam_calib is not None and cpf_to_rgb is not None:
+                            # Transform gaze point to RGB camera frame
+                            gaze_in_rgb_frame = cpf_to_rgb @ eyegaze_data.spatial_gaze_point_in_cpf
+                            # Project 3D point to 2D image coordinates
+                            pixel_point = rgb_cam_calib.project(gaze_in_rgb_frame)
+                            
+                            if pixel_point is not None:
+                                x_pixel, y_pixel = pixel_point
+                                draw = ImageDraw.Draw(img)
+                                radius = 12
+                                draw.ellipse((x_pixel - radius, y_pixel - radius, 
+                                              x_pixel + radius, y_pixel + radius), 
+                                              outline="red", width=3)
+                                # Draw an inner dot
+                                dot_radius = 2
+                                draw.ellipse((x_pixel - dot_radius, y_pixel - dot_radius, 
+                                              x_pixel + dot_radius, y_pixel + dot_radius), 
+                                              fill="red")
+
                         filename = f"gaze_trigger_{trigger_count:03d}_{latest_rgb_timestamp:.3f}.jpg"
                         saved_img_path = os.path.join(run_dir, filename)
                         img.save(saved_img_path)
@@ -61,12 +102,23 @@ def eyegaze_callback(eyegaze_data: EyeGaze):
                         saved_img_path = f"Error saving: {e}"
 
             log_str = f"[TRIGGER {trigger_count:02d}] 📸 Intent captured at time {timestamp_sec:.3f} s | Gaze Vector -> Yaw: {yaw:.4f} rad, Pitch: {pitch:.4f} rad\n"
+            
+            row_obj = None
             if saved_img_path:
                 if "Error" in saved_img_path:
                     log_str += f"   ⚠️ {saved_img_path}\n"
                 else:
                     log_str += f"   🖼️  Saved image: {saved_img_path}\n"
+                    
+                    # Prepare the row object for the SQL database
+                    row_obj = GazeEventRow(
+                        timestamp=timestamp_sec,
+                        depth=eyegaze_data.depth,
+                        img_path=saved_img_path
+                    )
+                    
             print(log_str, end='')
+            # You can now insert `row_obj` into your database if it is not None
 
 def main():
     parser = argparse.ArgumentParser()
@@ -100,7 +152,8 @@ def main():
         device = device_client.connect()
     except Exception as e:
         print(f"Failed to connect to device: {e}")
-        out_file_handle.close()
+        if raw_file_handle:
+            raw_file_handle.close()
         return
 
     # Set up streaming
@@ -127,6 +180,7 @@ def main():
     stream_receiver.set_server_config(server_config)
     stream_receiver.register_eye_gaze_callback(eyegaze_callback)
     stream_receiver.register_rgb_callback(image_callback)
+    stream_receiver.register_device_calib_callback(device_calib_callback)
     stream_receiver.start_server()
 
     print(f"\n✅ Live streaming is active! Listening for eye gaze events...")
