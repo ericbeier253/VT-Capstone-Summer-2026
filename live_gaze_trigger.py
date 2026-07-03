@@ -3,6 +3,8 @@ import os
 import time
 import argparse
 import threading
+from dataclasses import dataclass
+import pickle
 
 import aria.sdk_gen2 as sdk_gen2
 import aria.stream_receiver as receiver
@@ -11,6 +13,12 @@ from projectaria_tools.core.sensor_data import ImageData, ImageDataRecord
 from PIL import Image, ImageDraw
 
 from gaze_trigger import GazeDwellTrigger
+
+@dataclass
+class GazeEventRow:
+    timestamp: float
+    depth: float
+    img_path: str
 
 # Global variables for the callback to use
 raw_file_handle = None
@@ -94,12 +102,23 @@ def eyegaze_callback(eyegaze_data: EyeGaze):
                         saved_img_path = f"Error saving: {e}"
 
             log_str = f"[TRIGGER {trigger_count:02d}] 📸 Intent captured at time {timestamp_sec:.3f} s | Gaze Vector -> Yaw: {yaw:.4f} rad, Pitch: {pitch:.4f} rad\n"
+            
+            row_obj = None
             if saved_img_path:
                 if "Error" in saved_img_path:
                     log_str += f"   ⚠️ {saved_img_path}\n"
                 else:
                     log_str += f"   🖼️  Saved image: {saved_img_path}\n"
+                    
+                    # Prepare the row object for the SQL database
+                    row_obj = GazeEventRow(
+                        timestamp=timestamp_sec,
+                        depth=eyegaze_data.depth,
+                        img_path=saved_img_path
+                    )
+                    
             print(log_str, end='')
+            # You can now insert `row_obj` into your database if it is not None
 
 def main():
     parser = argparse.ArgumentParser()
