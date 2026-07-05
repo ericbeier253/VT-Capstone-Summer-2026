@@ -5,6 +5,7 @@ import argparse
 import threading
 from dataclasses import dataclass
 import pickle
+import requests
 
 import aria.sdk_gen2 as sdk_gen2
 import aria.stream_receiver as receiver
@@ -116,6 +117,24 @@ def eyegaze_callback(eyegaze_data: EyeGaze):
                         depth=eyegaze_data.depth,
                         img_path=saved_img_path
                     )
+                    
+                    # Send POST request to FastAPI server
+                    try:
+                        response = requests.post(
+                            "http://127.0.0.1:8000/insert",
+                            json={
+                                "timestamp": row_obj.timestamp,
+                                "depth": row_obj.depth,
+                                "img_path": row_obj.img_path
+                            },
+                            timeout=2.0
+                        )
+                        if response.status_code == 200:
+                            log_str += "   ✅ Successfully saved to database\n"
+                        else:
+                            log_str += f"   ❌ DB Error: {response.text}\n"
+                    except requests.exceptions.RequestException as e:
+                        log_str += f"   ❌ Failed to connect to DB: {e}\n"
                     
             print(log_str, end='')
             # You can now insert `row_obj` into your database if it is not None
