@@ -14,6 +14,7 @@ from projectaria_tools.core.sensor_data import ImageData, ImageDataRecord
 from PIL import Image, ImageDraw
 
 from gaze_trigger import GazeDwellTrigger
+from storage_handler import CloudStorageHandler
 
 @dataclass
 class GazeEventRow:
@@ -28,6 +29,8 @@ trigger_count = 0
 run_dir = None
 rgb_cam_calib = None
 cpf_to_rgb = None
+storage_mode = "local"
+cloud_storage_handler = None
 
 # Image caching variables
 latest_rgb_image = None
@@ -118,23 +121,27 @@ def eyegaze_callback(eyegaze_data: EyeGaze):
                         img_path=saved_img_path
                     )
                     
-                    # Send POST request to FastAPI server
-                    try:
-                        response = requests.post(
-                            "http://127.0.0.1:8000/insert",
-                            json={
-                                "timestamp": row_obj.timestamp,
-                                "depth": row_obj.depth,
-                                "img_path": row_obj.img_path
-                            },
-                            timeout=2.0
-                        )
-                        if response.status_code == 200:
-                            log_str += "   ✅ Successfully saved to database\n"
-                        else:
-                            log_str += f"   ❌ DB Error: {response.text}\n"
-                    except requests.exceptions.RequestException as e:
-                        log_str += f"   ❌ Failed to connect to DB: {e}\n"
+                    # Send POST request to FastAPI server or to GCP
+                    if storage_mode == "cloud" and cloud_storage_handler:
+                        run_id = os.path.basename(run_dir) if run_dir else None
+                        log_str += cloud_storage_handler.save_event(row_obj.timestamp, row_obj.depth, row_obj.img_path, run_id)
+                    else:
+                        try:
+                            response = requests.post(
+                                "http://127.0.0.1:8000/insert",
+                                json={
+                                    "timestamp": row_obj.timestamp,
+                                    "depth": row_obj.depth,
+                                    "img_path": row_obj.img_path
+                                },
+                                timeout=2.0
+                            )
+                            if response.status_code == 200:
+                                log_str += "   ✅ Successfully saved to local database\n"
+                            else:
+                                log_str += f"   ❌ DB Error: {response.text}\n"
+                        except requests.exceptions.RequestException as e:
+                            log_str += f"   ❌ Failed to connect to local DB: {e}\n"
                     
             print(log_str, end='')
             # You can now insert `row_obj` into your database if it is not None
@@ -142,11 +149,32 @@ def eyegaze_callback(eyegaze_data: EyeGaze):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-dir", type=str, required=True, help="Path to the output directory for this run session")
+    parser.add_argument("--cloud", action="store_true", help="Use Google Cloud for storage")
+    parser.add_argument("--local", action="store_true", help="Use local Postgres storage (default)")
     args = parser.parse_args()
+    
+    # Load .env file
+    env_path = os.path.join(os.path.dirname(__file__), '.env')
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                if line.strip() and not line.startswith('#'):
+                    key, val = line.strip().split('=', 1)
+                    os.environ[key] = val.strip().strip('"').strip("'")
 
     global raw_file_handle
     global trigger
     global run_dir
+    global storage_mode
+    global cloud_storage_handler
+    
+    if args.cloud:
+        storage_mode = "cloud"
+        gcp_project = os.environ.get("GCP_PROJECT")
+        gcs_bucket = os.environ.get("GCS_BUCKET")
+        cloud_storage_handler = CloudStorageHandler(gcp_project=gcp_project, gcs_bucket=gcs_bucket)
+    else:
+        storage_mode = "local"
     
     run_dir = args.run_dir
     if run_dir:

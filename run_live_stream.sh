@@ -34,4 +34,4 @@ echo "   $RUN_DIR"
 echo "-----------------------------------------"
 
 # Execute the stream processing script
-python3 live_gaze_trigger.py --run-dir "$RUN_DIR"
+python3 live_gaze_trigger.py --run-dir "$RUN_DIR" "$@"
