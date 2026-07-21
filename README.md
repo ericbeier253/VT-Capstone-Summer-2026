@@ -11,6 +11,8 @@ We are utilizing a serverless Google Cloud architecture to store our data:
     *   `depth`: The gaze depth measurement that triggered the event.
     *   `img_path`: A `gs://` URI referencing the corresponding image in GCS.
     *   `run_id`: The ID of the run session this event belongs to.
+    *   `llm_analysis`: A structured JSON payload identifying the environment and itemized objects in the room under the gaze target.
+*   **Gemini AI**: Asynchronously processes captured images in a background local worker thread to provide semantic scene and object analysis, pushing the enriched payload seamlessly to Firestore without blocking the camera stream.
 
 ## Setup Instructions
 
@@ -21,6 +23,7 @@ To run either the data collector or the viewer, you must configure your environm
     GCP_PROJECT="<YOUR_GCP_PROJECT_ID>"
     GCS_BUCKET="<YOUR_GCS_BUCKET_NAME>"
     GOOGLE_APPLICATION_CREDENTIALS="/absolute/path/to/repo/.secrets/<YOUR_KEY_FILE>.json"
+    GEMINI_API_KEY="<YOUR_GEMINI_API_KEY>"
     ```
 2.  **Service Account Key**: Place your Google Cloud service account JSON key inside the `.secrets/` directory. *(Note: The `.secrets/` folder is ignored by git to prevent credential leaks).*
 3.  **Dependencies**: Install the required packages (using a virtual environment is highly recommended, but optional):

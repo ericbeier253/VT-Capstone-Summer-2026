@@ -1,4 +1,7 @@
 google-cloud-storage
 google-cloud-firestore
+google-genai
 streamlit
 pandas
+Pillow
+requests
