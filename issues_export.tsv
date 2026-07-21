@@ -1,0 +1,5 @@
+ID	State	Title	Body
+6	CLOSED	US-08: Gaze Intent Overlay	As a developer, I want to capture and overlay gaze intent on the live video stream to visually verify tracking accuracy.
+5	CLOSED	US-09: Cloud Viewer Application	As a reviewer, I want a graphical interface (Viewer App) that stores and pulls data and images to/from the cloud so I can easily review the captures without a local instance.
+4	OPEN	US-03b: Search and Filter Log Database	As a user, I want to search and filter the log database so I can isolate relevant data from specific runs.
+3	CLOSED	US-03a: Database Setup	As a user, I want to set up a database for the snapshots and metadata to be stored securely.

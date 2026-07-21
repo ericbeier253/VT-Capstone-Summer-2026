@@ -88,7 +88,7 @@ if selected_run:
                                     bucket = storage_client.bucket(bucket_name)
                                     blob = bucket.blob(blob_name)
                                     img_bytes = blob.download_as_bytes()
-                                    st.image(img_bytes, use_column_width=True)
+                                    st.image(img_bytes, use_container_width=True)
                                 except Exception as e:
                                     st.error(f"Failed to load image: {e}")
                     
@@ -96,5 +96,28 @@ if selected_run:
                         st.subheader(f"Time: {event.get('timestamp', 0):.2f}s")
                         st.write(f"**Depth:** {event.get('depth', 0):.2f}")
                         st.write(f"**GCS Path:** `{img_uri}`")
+                        
+                        llm_analysis = event.get("llm_analysis")
+                        if llm_analysis:
+                            if "error" in llm_analysis:
+                                st.error(f"Analysis Error: {llm_analysis['error']}")
+                            else:
+                                scene = llm_analysis.get("scene_meta", {})
+                                objects = llm_analysis.get("objects", [])
+                                
+                                st.markdown("---")
+                                st.markdown(f"**Scene:** {scene.get('description', 'N/A')}")
+                                st.caption(f"Environment: {scene.get('environment', 'N/A')} | Lighting: {scene.get('lighting', 'N/A')}")
+                                
+                                if objects:
+                                    gaze_target = next((obj for obj in objects if obj.get("is_gaze_target")), None)
+                                    if gaze_target:
+                                        st.success(f"🎯 **Gaze Target:** {gaze_target.get('object_name')} - {gaze_target.get('object_description')}")
+                                    
+                                    with st.expander(f"View all {len(objects)} detected objects"):
+                                        st.dataframe(pd.DataFrame(objects), use_container_width=True)
+                                        
+                                with st.expander("🐞 Debugger: Raw LLM Output"):
+                                    st.json(llm_analysis)
                         
     display_events()
