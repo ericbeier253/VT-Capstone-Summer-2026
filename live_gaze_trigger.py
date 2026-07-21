@@ -31,6 +31,7 @@ rgb_cam_calib = None
 cpf_to_rgb = None
 storage_mode = "local"
 cloud_storage_handler = None
+device = None
 
 # Image caching variables
 latest_rgb_image = None
@@ -107,6 +108,12 @@ def eyegaze_callback(eyegaze_data: EyeGaze):
 
             log_str = f"[TRIGGER {trigger_count:02d}] 📸 Intent captured at time {timestamp_sec:.3f} s | Gaze Vector -> Yaw: {yaw:.4f} rad, Pitch: {pitch:.4f} rad\n"
             
+            if device:
+                try:
+                    device.render_tts("beep")
+                except Exception as e:
+                    log_str += f"   ⚠️ Audio Error: {e}\n"
+            
             row_obj = None
             if saved_img_path:
                 if "Error" in saved_img_path:
@@ -167,6 +174,7 @@ def main():
     global run_dir
     global storage_mode
     global cloud_storage_handler
+    global device
     
     if args.cloud:
         storage_mode = "cloud"
