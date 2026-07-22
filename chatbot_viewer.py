@@ -2,11 +2,9 @@ import json
 import logging
 import os
 import re
-from pathlib import Path
 from typing import Any
 
 import streamlit as st
-from dotenv import load_dotenv
 from google import genai
 from google.cloud import firestore
 
@@ -16,24 +14,35 @@ logger = logging.getLogger(__name__)
 # Configure the Streamlit page appearance.
 st.set_page_config(page_title="Project Aria Chatbot", page_icon="💬", layout="centered")
 
+# Load environment variables from .env file
+env_path = os.path.join(os.path.dirname(__file__), '.env')
+if os.path.exists(env_path):
+    with open(env_path) as f:
+        for line in f:
+            if line.strip() and not line.startswith('#'):
+                key, val = line.strip().split('=', 1)
+                os.environ[key] = val.strip().strip('"').strip("'")
 
-def load_environment() -> tuple[str, str]:
-    """Load project credentials from the local .env file if it exists."""
-    env_path = Path(__file__).resolve().parent / ".env"
-    if env_path.exists():
-        load_dotenv(dotenv_path=env_path)
+GCP_PROJECT = os.environ.get("GCP_PROJECT", "project-aria-501223")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-    return os.environ.get("GCP_PROJECT", ""), os.environ.get("GEMINI_API_KEY", "")
+
+@st.cache_resource
+def get_clients():
+    """Initialize and cache Firestore and Gemini clients."""
+    fs = firestore.Client(project=GCP_PROJECT)
+    gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+    return fs, gemini
 
 
 @st.cache_data(ttl=60)
-def get_firestore_events(firestore_client, limit: int = 20):
+def get_firestore_events(_firestore_client, limit: int = 20):
     """Fetch recent gaze event documents from Firestore for chat context."""
-    if not firestore_client:
+    if not _firestore_client:
         return []
 
     # Query the main collection that stores the gaze-event metadata.
-    docs = firestore_client.collection("gaze_events").limit(limit).stream()
+    docs = _firestore_client.collection("gaze_events").limit(limit).stream()
     events = []
     for doc in docs:
         data = doc.to_dict() or {}
@@ -80,13 +89,13 @@ def extract_object_name(prompt: str) -> str:
     return cleaned.strip("? .,:;!")
 
 
-def get_firestore_object(firestore_client, prompt: str) -> str:
+def get_firestore_object(_firestore_client, prompt: str) -> str:
     """Search Firestore for a matching object and return the relevant JSON payload."""
-    if not firestore_client:
+    if not _firestore_client:
         return "Firestore is not configured yet. Add GCP_PROJECT to your .env file and restart the app."
 
     # Pull the latest event records and build a simple object lookup index.
-    events = get_firestore_events(firestore_client, limit=50)
+    events = get_firestore_events(_firestore_client, limit=50)
     object_index = ingest_object_index(events)
     object_name = extract_object_name(prompt)
 
@@ -124,10 +133,11 @@ def main() -> None:
     st.title("💬 Project Aria Chatbox")
     st.caption("Tell me what you are looking for and I will search the Firestore object data for the matching JSON payload.")
 
-    GCP_PROJECT = os.environ.get("GCP_PROJECT", "project-aria-501223")
-    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-    firestore_client = firestore.Client(project=GCP_PROJECT)
-    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+    if not GCP_PROJECT:
+        st.error("GCP_PROJECT not found in .env")
+        st.stop()
+
+    firestore_client, gemini_client = get_clients()
 
     if "messages" not in st.session_state:
         st.session_state.messages = [
@@ -141,8 +151,6 @@ def main() -> None:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    if not GCP_PROJECT:
-        st.sidebar.error("Set GCP_PROJECT in your .env file before using Firestore.")
     if not GEMINI_API_KEY:
         st.sidebar.info("Gemini is optional here; Firestore object lookup is enabled without it.")
 
