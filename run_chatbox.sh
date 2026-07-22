@@ -1,7 +1,7 @@
 #!/bin/bash
 
 echo "========================================="
-echo "👁️ Starting Project Aria Gaze Viewer..."
+echo "👁️ Starting Project Aria Chat Bot..."
 echo "========================================="
 
 # Run streamlit safely using the active python3 executable

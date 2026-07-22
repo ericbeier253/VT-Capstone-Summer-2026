@@ -80,29 +80,12 @@ def extract_object_name(prompt: str) -> str:
     return cleaned.strip("? .,:;!")
 
 
-def find_matching_objects(index: list[dict[str, Any]], object_name: str) -> list[dict[str, Any]]:
-    """Find Firestore entries whose object_name best matches the user request."""
-    if not object_name:
-        return []
-
-    # Compare the user’s requested object name against every indexed object name.
-    # A simple substring match is enough for the first version of this chatbot.
-    target = object_name.lower().strip()
-    matches = []
-    for entry in index:
-        obj = entry.get("object", {})
-        name = str(obj.get("object_name", "")).lower()
-        if target in name or name in target:
-            matches.append(entry)
-    return matches
-
-
-def get_firestore_reply(firestore_client, prompt: str) -> str:
+def get_firestore_object(firestore_client, prompt: str) -> str:
     """Search Firestore for a matching object and return the relevant JSON payload."""
     if not firestore_client:
         return "Firestore is not configured yet. Add GCP_PROJECT to your .env file and restart the app."
 
-    # Pull the latest event records and build an object-to-payload lookup index.
+    # Pull the latest event records and build a simple object lookup index.
     events = get_firestore_events(firestore_client, limit=50)
     object_index = ingest_object_index(events)
     object_name = extract_object_name(prompt)
@@ -110,29 +93,30 @@ def get_firestore_reply(firestore_client, prompt: str) -> str:
     if not object_name:
         return "Please tell me the object name you want to look up."
 
-    matches = find_matching_objects(object_index, object_name)
-    if not matches:
-        return f"I could not find an object matching '{object_name}' in the Firestore data."
+    # Compare the requested object name against every indexed object name.
+    target = object_name.lower().strip()
+    for entry in object_index:
+        obj = entry.get("object", {})
+        name = str(obj.get("object_name", "")).lower()
+        if target in name or name in target:
+            object_data = obj
+            scene_meta = entry.get("scene_meta", {})
+            event_data = entry.get("event", {})
 
-    # Use the first strong match as the main result for now.
-    best_match = matches[0]
-    object_data = best_match.get("object", {})
-    scene_meta = best_match.get("scene_meta", {})
-    event_data = best_match.get("event", {})
+            payload = {
+                "scene_meta": scene_meta,
+                "object": object_data,
+                "source_event_id": entry.get("doc_id"),
+                "timestamp": event_data.get("timestamp"),
+                "run_id": event_data.get("run_id"),
+            }
 
-    # Package the matched object and the surrounding scene context into a JSON response.
-    payload = {
-        "scene_meta": scene_meta,
-        "object": object_data,
-        "source_event_id": best_match.get("doc_id"),
-        "timestamp": event_data.get("timestamp"),
-        "run_id": event_data.get("run_id"),
-    }
+            return (
+                f"I found a match for '{object_data.get('object_name')}'.\n\n"
+                f"```json\n{json.dumps(payload, indent=2, default=str)}\n```"
+            )
 
-    return (
-        f"I found a match for '{object_data.get('object_name')}'.\n\n"
-        f"```json\n{json.dumps(payload, indent=2, default=str)}\n```"
-    )
+    return f"I could not find an object matching '{object_name}' in the Firestore data."
 
 
 def main() -> None:
@@ -169,7 +153,7 @@ def main() -> None:
             st.markdown(prompt)
 
         # First do the structured Firestore lookup, then optionally enhance the result with Gemini.
-        reply = get_firestore_reply(firestore_client, prompt)
+        reply = get_firestore_object(firestore_client, prompt)
         if gemini_client and GEMINI_API_KEY:
             try:
                 response = gemini_client.models.generate_content(
