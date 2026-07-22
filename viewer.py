@@ -49,11 +49,49 @@ if not runs:
 selected_run = st.selectbox("Select Run", runs)
 
 if selected_run:
-    col1, col2 = st.columns([8, 1])
+    col1, col2, col3 = st.columns([6, 2, 2])
     with col1:
         st.subheader(f"Events for {selected_run}")
     with col2:
-        if st.button("🔄 Refresh Data"):
+        if st.button("🔄 Refresh Data", use_container_width=True):
+            st.rerun()
+    with col3:
+        if st.button("🗑️ Delete Run", type="primary", use_container_width=True):
+            with st.spinner("Deleting run from Firestore and GCS..."):
+                # 1. Fetch and delete all Firestore docs
+                docs = fs_client.collection("gaze_events").where("run_id", "==", selected_run).stream()
+                batch = fs_client.batch()
+                count = 0
+                
+                # Also collect GCS bucket paths to delete
+                blobs_to_delete = []
+                for doc in docs:
+                    data = doc.to_dict()
+                    img_uri = data.get("img_path", "")
+                    if img_uri.startswith("gs://"):
+                        parts = img_uri.replace("gs://", "").split("/", 1)
+                        if len(parts) == 2:
+                            blobs_to_delete.append((parts[0], parts[1]))
+                    batch.delete(doc.reference)
+                    count += 1
+                    if count >= 490: # Firestore batch limit
+                        batch.commit()
+                        batch = fs_client.batch()
+                        count = 0
+                if count > 0:
+                    batch.commit()
+                    
+                # 2. Delete GCS blobs
+                for bucket_name, blob_name in blobs_to_delete:
+                    try:
+                        bucket = storage_client.bucket(bucket_name)
+                        blob = bucket.blob(blob_name)
+                        blob.delete()
+                    except Exception:
+                        pass
+                
+                # 3. Clear cache and reload
+                get_runs.clear()
             st.rerun()
             
     def display_events():
