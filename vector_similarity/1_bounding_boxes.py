@@ -11,6 +11,55 @@ from google.genai.types import Part
 
 import time
 
+from pydantic import BaseModel, Field, model_validator
+from typing import List
+
+# ==========================================================
+# SCHEMA
+# ==========================================================
+
+class BoundingBox(BaseModel):
+    x1: int = Field(description="Left coordinate")
+    y1: int = Field(description="Top coordinate")
+    x2: int = Field(description="Right coordinate")
+    y2: int = Field(description="Bottom coordinate")
+
+    @model_validator(mode="after")
+    def validate_box(self):
+        if self.x1 < 0 or self.y1 < 0:
+            raise ValueError("Bounding box coordinates must be non-negative.")
+
+        if self.x1 >= self.x2:
+            raise ValueError("Bounding box must satisfy x1 < x2.")
+
+        if self.y1 >= self.y2:
+            raise ValueError("Bounding box must satisfy y1 < y2.")
+
+        return self
+
+class SceneMeta(BaseModel):
+    description: str
+    environment: str
+    lighting: str
+
+
+class DetectedObject(BaseModel):
+    object_name: str
+    object_description: str
+    object_location: str
+
+    # List of bounding boxes, each is [x1, y1, x2, y2]
+    bounding_boxes: List[BoundingBox] #List[List[int]] = Field(
+    #    description="Bounding boxes in [x1, y1, x2, y2] format."
+    #)
+
+    is_gaze_target: bool
+
+
+class ImageAnalysis(BaseModel):
+    scene_meta: SceneMeta
+    objects: List[DetectedObject]
+
 # ==========================================================
 # CONFIGURATION
 # ==========================================================
@@ -37,29 +86,44 @@ MAX_WORKERS = 1 # More than 1 leads to resouce exhaustion
 
 MODEL_NAME = "gemini-3.5-flash-lite"
 
+#PROMPT = """
+#Analyze the image. The red crosshair indicates the user's gaze vector.
+#
+#You MUST return exactly one valid JSON object with meta information about the overall scene, and an itemized list of objects found in the image.
+#
+#Format exactly as:
+#
+#{
+#  "scene_meta": {
+#    "description": "General description of the overall scene",
+#    "environment": "Indoors, outdoors, office, kitchen, etc.",
+#    "lighting": "Bright, dim, natural, artificial, etc."
+#  },
+#  "objects": [
+#    {
+#      "object_name": "Name of the object",
+#      "object_description": "Detailed description of the object",
+#      "object_location": "Contextual location of the object in the image",
+#      "bounding_boxes": "A list of integers denoting the top-left and bottom-right corner points of the bounding box for the object",
+#      "is_gaze_target": true
+#    }
+#  ]
+#}
+#"""
+
 PROMPT = """
-Analyze the image. The red crosshair indicates the user's gaze vector.
+Analyze the image.
 
-You MUST return exactly one valid JSON object with meta information about the overall scene, and an itemized list of objects found in the image.
+The red crosshair indicates the user's gaze.
 
-Format exactly as:
+Detect all visible objects.
 
-{
-  "scene_meta": {
-    "description": "General description of the overall scene",
-    "environment": "Indoors, outdoors, office, kitchen, etc.",
-    "lighting": "Bright, dim, natural, artificial, etc."
-  },
-  "objects": [
-    {
-      "object_name": "Name of the object",
-      "object_description": "Detailed description of the object",
-      "object_location": "Contextual location of the object in the image",
-      "bounding_boxes": "A list of integers denoting the top-left and bottom-right corner points of the bounding box for the object",
-      "is_gaze_target": true
-    }
-  ]
-}
+For each object provide:
+- name
+- description
+- location
+- bounding box
+- whether it is the gaze target
 """
 
 # ==========================================================
@@ -129,7 +193,7 @@ def is_image(blob_name: str) -> bool:
     return Path(blob_name).suffix.lower() in IMAGE_EXTENSIONS
 
 
-def analyze_gcs_image(blob: str) -> dict: #gcs_uri: str) -> dict:
+def analyze_gcs_image(blob: str) -> ImageAnalysis:#dict: #gcs_uri: str) -> dict:
 
     image_bytes = blob.download_as_bytes()
 
@@ -145,11 +209,13 @@ def analyze_gcs_image(blob: str) -> dict: #gcs_uri: str) -> dict:
         ],
         config=types.GenerateContentConfig(
             temperature=0,
-            response_mime_type="application/json"
+            response_mime_type="application/json",
+            response_schema=ImageAnalysis,
         )
     )
 
-    return json.loads(response.text)
+    #return json.loads(response.text)
+    return response.parsed
 
 
 def save_result(blob_name: str, result: dict):
@@ -166,7 +232,8 @@ def save_result(blob_name: str, result: dict):
 
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(
-            result,
+            #result,
+            result.model_dump(),
             f,
             indent=2,
             ensure_ascii=False
