@@ -15,7 +15,13 @@ def main():
     parser.add_argument("--run-dir", type=str, required=True, help="Path to the output directory for this run session")
     parser.add_argument("--cloud", action="store_true", help="Use Google Cloud for storage")
     parser.add_argument("--local", action="store_true", help="Use local Postgres storage (default)")
+    parser.add_argument("--usb", action="store_true", help="Connect to glasses over USB")
+    parser.add_argument("--wifi", type=str, metavar="IP_ADDRESS", help="Connect to glasses over Wi-Fi at the specified IP address")
     args = parser.parse_args()
+    
+    if not args.usb and not args.wifi:
+        print("Error: You must specify either --usb or --wifi <IP_ADDRESS>")
+        return
     
     # Load .env file
     env_path = os.path.join(os.path.dirname(__file__), '.env')
@@ -52,13 +58,18 @@ def main():
     raw_file_handle.flush()
     
     # Connect to device
-    print("Connecting to Aria Gen2 device...")
     device_client = sdk_gen2.DeviceClient()
     config = sdk_gen2.DeviceClientConfig()
     device_client.set_client_config(config)
     
     try:
-        device = device_client.connect()
+        if args.wifi:
+            print(f"Connecting to Aria Gen2 device over Wi-Fi ({args.wifi})...")
+            target = sdk_gen2.DeviceTarget(ip=args.wifi)
+            device = device_client.connect(target)
+        else:
+            print("Connecting to Aria Gen2 device over USB...")
+            device = device_client.connect()
     except Exception as e:
         print(f"Failed to connect to device: {e}")
         raw_file_handle.close()
@@ -76,7 +87,7 @@ def main():
     print("Configuring streaming profile...")
     streaming_config = sdk_gen2.HttpStreamingConfig()
     streaming_config.profile_name = "profile9"
-    streaming_config.streaming_interface = sdk_gen2.StreamingInterface.USB_NCM
+    streaming_config.streaming_interface = sdk_gen2.StreamingInterface.WIFI_ANY if args.wifi else sdk_gen2.StreamingInterface.USB_NCM
     device.set_streaming_config(streaming_config)
 
     print("Starting streaming on device...")
