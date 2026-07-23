@@ -15,4 +15,9 @@ venv/
 .venv/
 
 .vscode/
+
 .env
+
+cropped_objects/
+
+results/
