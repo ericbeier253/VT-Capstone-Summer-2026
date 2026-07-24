@@ -1,0 +1,32 @@
+{
+   "name": "custom_low_latency_gaze",
+   "description": "Custom low latency profile with SLAM and other redundant sensors disabled. RGB 5Hz, ET 30Hz.",
+   "imus": {
+    "rate_hz": 800
+   },
+   "magnetometer": {
+    "rate_hz": 100
+   },
+   "barometer": {
+    "rate_hz": 50
+   },
+   "rgb_camera": {
+    "rate_hz": 5,
+    "auto_exposure": {},
+    "encoding": "H265",
+    "video_config": {
+     "cqp": {
+      "qp": 22
+     }
+    },
+    "resolution": "R_4032x3024",
+    "width": 2560,
+    "height": 1920
+   },
+   "et": {
+    "rate_hz": 30
+   },
+   "device_info": {
+    "period_ms": 30000
+   }
+}

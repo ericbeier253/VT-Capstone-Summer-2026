@@ -84,9 +84,22 @@ def main():
     )
 
     # Set up streaming
-    print("Configuring streaming profile...")
+    print("Configuring custom streaming profile (low framerate, SLAM disabled)...")
     streaming_config = sdk_gen2.HttpStreamingConfig()
-    streaming_config.profile_name = "profile9"
+    
+    import shutil
+    
+    # Define the path to our external custom profile
+    source_profile_path = os.path.join(os.path.dirname(__file__), "custom_profile.json")
+    
+    # We will copy the custom profile to the current run directory so there's a record of it for this session
+    custom_profile_path = os.path.join(run_dir, "custom_profile.json")
+    if os.path.exists(source_profile_path):
+        shutil.copy(source_profile_path, custom_profile_path)
+    else:
+        print(f"Warning: {source_profile_path} not found. Ensure the custom profile exists.")
+    
+    streaming_config.profile_json = os.path.abspath(custom_profile_path)
     streaming_config.streaming_interface = sdk_gen2.StreamingInterface.WIFI_ANY if args.wifi else sdk_gen2.StreamingInterface.USB_NCM
     device.set_streaming_config(streaming_config)
 
