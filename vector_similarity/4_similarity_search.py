@@ -13,6 +13,8 @@ from google.cloud.firestore_v1.vector import Vector
 from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
 from google.oauth2 import service_account
 
+import pprint
+import torch.nn.functional as F
 
 # ============================================================
 # CONFIG
@@ -36,13 +38,13 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 MODEL_NAME = "facebook/dinov2-base"
 
-TOP_K = 5
+TOP_K = 30
 
-COLLECTION = "obj_embeddings"
+COLLECTION = "object_collection"
 
 VECTOR_FIELD = "embedding"
 
-THRESHOLD = 0.25
+THRESHOLD = 0.15
 
 
 # ============================================================
@@ -97,9 +99,24 @@ def generate_embedding(image_path: str):
 
     outputs = model(**inputs)
 
+    #embedding = (
+    #    outputs.last_hidden_state[:, 0]
+    #    .squeeze()
+    #    .cpu()
+    #    .numpy()
+    #)
+
+    embedding = outputs.last_hidden_state[:, 0]
+
+    # L2 normalize for cosine similarity
+    embedding = F.normalize(
+        embedding,
+        p=2,
+        dim=1,
+    )
+
     embedding = (
-        outputs.last_hidden_state[:, 0]
-        .squeeze()
+        embedding.squeeze()
         .cpu()
         .numpy()
     )
@@ -121,6 +138,7 @@ def search_similar_images(query_vector):
             query_vector=Vector(query_vector),
             distance_measure=DistanceMeasure.COSINE, 
             distance_threshold=THRESHOLD,
+            distance_result_field="distance",
             limit=TOP_K,
         )
         .get()
@@ -132,6 +150,8 @@ def search_similar_images(query_vector):
 
         data = doc.to_dict()
 
+        distance = data.get("distance")
+
         print(f"{rank}. Document ID : {doc.id}")
 
         print(f"   Object       : {data.get('object_name')}")
@@ -142,14 +162,26 @@ def search_similar_images(query_vector):
 
         print(f"   Run          : {data.get('run_name')}")
 
+        #print(f"   Distance     : {data.get('distance')}")
+
+        if distance is not None:
+            print(f"   Distance : {distance:.6f}")
+
         if "path" in data:
             print(f"   Path         : {data['path']}")
 
         # Firestore returns the distance as a special field
-        if "__distance__" in data:
-            print(f"   Distance     : {data['__distance__']:.6f}")
+        #if "__distance__" in data:
+        #    print(f"   Distance     : {data['__distance__']:.6f}")
 
         print()
+
+    # Debugging
+    #for doc in results:
+
+    #    pprint.pp(doc.to_dict())
+
+    #    break
 
 
 # ============================================================

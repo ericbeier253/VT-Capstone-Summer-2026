@@ -11,6 +11,7 @@ from google.cloud import firestore
 from google.oauth2 import service_account
 from google.cloud.firestore_v1.vector import Vector
 
+import torch.nn.functional as F
 
 # -------------------------------------------------------
 # CONFIG
@@ -32,7 +33,7 @@ PROJECT_ID = os.environ["GCP_PROJECT"] #"Project Aria"
 
 SERVICE_ACCOUNT = ".secrets/aria-uploader-key.json"
 
-COLLECTION = "obj_embeddings"
+COLLECTION = "object_collection"
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -87,9 +88,24 @@ def embed_image(path: Path):
 
     outputs = model(**inputs)
 
+    #embedding = (
+    #    outputs.last_hidden_state[:, 0]
+    #    .squeeze()
+    #    .cpu()
+    #    .numpy()
+    #)
+
+    embedding = outputs.last_hidden_state[:, 0]
+
+    # L2 normalize
+    embedding = F.normalize(
+        embedding,
+        p=2,
+        dim=1,
+    )
+
     embedding = (
-        outputs.last_hidden_state[:, 0]
-        .squeeze()
+        embedding.squeeze()
         .cpu()
         .numpy()
     )
