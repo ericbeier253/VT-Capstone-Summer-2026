@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  dinov2_host:
+    build: .
+    container_name: dinov2_host
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: dinov2_tunnel
+    command: tunnel run
+    env_file:
+      - .env
+    restart: unless-stopped
+    depends_on:
+      - dinov2_host
