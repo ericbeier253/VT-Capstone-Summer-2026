@@ -89,10 +89,10 @@ def extract_object_name(prompt: str) -> str:
     return cleaned.strip("? .,:;!")
 
 
-def get_firestore_object(_firestore_client, prompt: str) -> str:
-    """Search Firestore for a matching object and return the relevant JSON payload."""
+def get_firestore_object(_firestore_client, prompt: str) -> dict[str, Any]:
+    """Search Firestore for a matching object and return a structured payload for model context."""
     if not _firestore_client:
-        return "Firestore is not configured yet. Add GCP_PROJECT to your .env file and restart the app."
+        return {"error": "Firestore is not configured yet. Add GCP_PROJECT to your .env file and restart the app."}
 
     # Pull the latest event records and build a simple object lookup index.
     events = get_firestore_events(_firestore_client, limit=50)
@@ -100,7 +100,7 @@ def get_firestore_object(_firestore_client, prompt: str) -> str:
     object_name = extract_object_name(prompt)
 
     if not object_name:
-        return "Please tell me the object name you want to look up."
+        return {"error": "Please tell me the object name you want to look up."}
 
     # Compare the requested object name against every indexed object name.
     target = object_name.lower().strip()
@@ -112,7 +112,7 @@ def get_firestore_object(_firestore_client, prompt: str) -> str:
             scene_meta = entry.get("scene_meta", {})
             event_data = entry.get("event", {})
 
-            payload = {
+            return {
                 "scene_meta": scene_meta,
                 "object": object_data,
                 "source_event_id": entry.get("doc_id"),
@@ -120,12 +120,36 @@ def get_firestore_object(_firestore_client, prompt: str) -> str:
                 "run_id": event_data.get("run_id"),
             }
 
-            return (
-                f"I found a match for '{object_data.get('object_name')}'.\n\n"
-                f"```json\n{json.dumps(payload, indent=2, default=str)}\n```"
-            )
+    return {"error": f"I could not find an object matching '{object_name}' in the Firestore data."}
 
-    return f"I could not find an object matching '{object_name}' in the Firestore data."
+
+def get_plain_english_location_reply(payload: dict[str, Any], prompt: str) -> str:
+    """Create a concise plain-English answer about where the object was detected."""
+    if not payload:
+        return "I couldn't find a matching object in the Firestore data."
+
+    if payload.get("error"):
+        return payload["error"]
+
+    object_data = payload.get("object") or {}
+    object_name = object_data.get("object_name") or "the object"
+    scene_meta = payload.get("scene_meta") or {}
+
+    location_candidates = []
+    for key in ["location", "room", "scene", "scene_name", "environment", "place", "area"]:
+        value = scene_meta.get(key)
+        if value:
+            location_candidates.append(str(value))
+
+    if not location_candidates:
+        for key in ["description", "scene_description", "summary"]:
+            value = scene_meta.get(key)
+            if value:
+                location_candidates.append(str(value))
+                break
+
+    location = location_candidates[0] if location_candidates else "the detected scene"
+    return f"I found {object_name} in {location}."
 
 
 def main() -> None:
@@ -161,20 +185,24 @@ def main() -> None:
             st.markdown(prompt)
 
         # First do the structured Firestore lookup, then optionally enhance the result with Gemini.
-        reply = get_firestore_object(firestore_client, prompt)
+        payload = get_firestore_object(firestore_client, prompt)
         if gemini_client and GEMINI_API_KEY:
             try:
                 response = gemini_client.models.generate_content(
                     model="gemini-3.5-flash-lite",
                     contents=[
-                        f"Use the Firestore payload below to answer the user clearly.\n\n{reply}",
+                        "Use the Firestore payload below as hidden context to answer the user's question in plain English. "
+                        "Mention the likely location or scene only, and do not print JSON or raw metadata.",
+                        json.dumps(payload, indent=2, default=str),
                         f"User question: {prompt}",
                     ],
                 )
                 reply = response.text.strip()
             except Exception as exc:
                 logger.error("Gemini request failed: %s", exc)
-                reply = f"Firestore lookup completed, but Gemini failed: {exc}"
+                reply = get_plain_english_location_reply(payload, prompt)
+        else:
+            reply = get_plain_english_location_reply(payload, prompt)
 
         st.session_state.messages.append({"role": "assistant", "content": reply})
         with st.chat_message("assistant"):
