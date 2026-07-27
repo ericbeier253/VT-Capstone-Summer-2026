@@ -26,7 +26,15 @@ def main():
     parser.add_argument("--run-dir", type=str, required=True, help="Path to the output directory for this run session")
     parser.add_argument("--cloud", action="store_true", help="Use Google Cloud for storage")
     parser.add_argument("--local", action="store_true", help="Use local Postgres storage (default)")
+    parser.add_argument("--debug", action="store_true", help="Enable verbose debug logging for the worker")
     args = parser.parse_args()
+
+    import logging
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    else:
+        logging.basicConfig(level=logging.INFO, format='%(message)s')
+    logger = logging.getLogger("Worker")
     
     # Load .env file
     env_path = os.path.join(os.path.dirname(__file__), '.env')
@@ -55,7 +63,7 @@ def main():
     db = firestore.Client()
 
     genai_client = genai.Client(
-        api_key=...
+        api_key=os.environ.get("GEMINI_API_KEY", "")
     )
 
     repository = FirestoreRepository(db)
@@ -86,6 +94,8 @@ def main():
         matcher,
 
         repository,
+
+        logger=logger,
 
     )
     enrichment_worker.start()

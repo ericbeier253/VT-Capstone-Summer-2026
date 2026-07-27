@@ -1,4 +1,5 @@
-
+import queue
+import threading
 
 class AsyncEnrichmentWorker:
 
@@ -19,6 +20,14 @@ class AsyncEnrichmentWorker:
         self.matcher = matcher
         self.repository = repository
         self.logger = logger
+        self.queue = queue.Queue()
+        self.thread = threading.Thread(target=self.worker, daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def enqueue(self, row_obj, run_id):
+        self.queue.put((row_obj, run_id))
 
     def process_image(
         self,
@@ -37,11 +46,13 @@ class AsyncEnrichmentWorker:
                 analysis,
             )
 
-            for crop in crops:
+            if not crops:
+                return
 
-                embedding = self.embedder.embed(
-                    crop.crop_path
-                )
+            crop_paths = [crop.crop_path for crop in crops]
+            embeddings = self.embedder.embed_batch(crop_paths)
+
+            for crop, embedding in zip(crops, embeddings):
 
                 object_id = self.matcher.assign_object_id(
                     embedding
@@ -61,7 +72,7 @@ class AsyncEnrichmentWorker:
 
                 )
 
-            self.storage_handler.save_event(
+            log_str = self.storage_handler.save_event(
 
                 timestamp=row_obj.timestamp,
 
@@ -71,9 +82,13 @@ class AsyncEnrichmentWorker:
 
                 run_id=run_id,
 
-                metadata=analysis.model_dump(),
+                llm_analysis=analysis.model_dump(),
 
             )
+            if log_str and self.logger:
+                self.logger.info(log_str.strip())
+            elif log_str:
+                print(log_str.strip())
 
             if self.logger:
                 self.logger.info(
@@ -104,11 +119,12 @@ class AsyncEnrichmentWorker:
             row_obj, run_id = item
 
             try:
-                self.process_image(
-                    row_obj,
-                    run_id,
-                )
-
+                self.process_image(row_obj, run_id)
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"Worker thread caught exception processing {row_obj.img_path}: {e}")
+                else:
+                    print(f"Worker thread caught exception: {e}")
             finally:
                 self.queue.task_done()
 
