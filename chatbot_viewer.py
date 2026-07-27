@@ -191,8 +191,8 @@ def main() -> None:
                 response = gemini_client.models.generate_content(
                     model="gemini-3.5-flash-lite",
                     contents=[
-                        "Use the Firestore payload below as hidden context to answer the user's question in plain English. "
-                        "Mention the likely location or scene only, and do not print JSON or raw metadata.",
+                        "Use the Firestore payload below as hidden context to answer the user's question in a full sentence"
+                        "Mention the location and the scene",
                         json.dumps(payload, indent=2, default=str),
                         f"User question: {prompt}",
                     ],
