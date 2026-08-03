@@ -80,7 +80,7 @@ def extract_object_name(prompt: str) -> str:
     if not cleaned:
         return ""
 
-    for keyword in ["looking for", "find", "search for", "show me", "i need", "object"]:
+    for keyword in ["looking for", "find", "search for", "show me", "i need", "object", "I forget", "Lost my"]:
         if keyword in cleaned.lower():
             match = re.search(rf"{re.escape(keyword)}\s+(.+)", cleaned, flags=re.IGNORECASE)
             if match:
@@ -89,7 +89,26 @@ def extract_object_name(prompt: str) -> str:
     return cleaned.strip("? .,:;!")
 
 
-def get_firestore_object(_firestore_client, prompt: str) -> dict[str, Any]:
+def parse_gemini_match_response(response_text: str) -> dict[str, Any]:
+    """Parse a Gemini response that includes a JSON match block for the object search."""
+    if not response_text:
+        return {}
+
+    match = re.search(r"```json\s*(\{.*?\})\s*```", response_text, flags=re.DOTALL | re.IGNORECASE)
+    if not match:
+        return {}
+
+    try:
+        payload = json.loads(match.group(1))
+        if isinstance(payload, dict):
+            return payload
+    except json.JSONDecodeError:
+        logger.warning("Gemini match response was not valid JSON: %s", response_text)
+
+    return {}
+
+
+def get_firestore_object(_firestore_client, prompt: str, gemini_client: Any | None = None) -> dict[str, Any]:
     """Search Firestore for a matching object and return a structured payload for model context."""
     if not _firestore_client:
         return {"error": "Firestore is not configured yet. Add GCP_PROJECT to your .env file and restart the app."}
@@ -101,6 +120,54 @@ def get_firestore_object(_firestore_client, prompt: str) -> dict[str, Any]:
 
     if not object_name:
         return {"error": "Please tell me the object name you want to look up."}
+
+    if gemini_client and GEMINI_API_KEY:
+        try:
+            serialized_index = []
+            for idx, entry in enumerate(object_index[:20]):
+                obj = entry.get("object", {})
+                serialized_index.append(
+                    {
+                        "index": idx,
+                        "object_name": obj.get("object_name"),
+                        "description": obj.get("object_description") or obj.get("description"),
+                        "scene": entry.get("scene_meta", {}),
+                    }
+                )
+
+            gemini_prompt = "\n\n".join(
+                [
+                    "Search the following object catalog and find the best semantic match for the user's request.",
+                    "Return a JSON object with keys: match_index, matched_object_name, reason.",
+                    "Use the whole catalog, not just the object_name field. Consider descriptions and scene context.",
+                    json.dumps(serialized_index, indent=2, default=str),
+                    f"User request: {prompt}",
+                ]
+            )
+            response = gemini_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[{"role": "user", "parts": [{"text": gemini_prompt}]}],
+            )
+            response_text = extract_gemini_text(response)
+            parsed = parse_gemini_match_response(response_text)
+            if parsed and parsed.get("match_index") is not None:
+                match_index = int(parsed["match_index"])
+                if 0 <= match_index < len(object_index):
+                    entry = object_index[match_index]
+                    obj = entry.get("object", {})
+                    scene_meta = entry.get("scene_meta", {})
+                    event_data = entry.get("event", {})
+                    return {
+                        "scene_meta": scene_meta,
+                        "object": obj,
+                        "source_event_id": entry.get("doc_id"),
+                        "timestamp": event_data.get("timestamp"),
+                        "run_id": event_data.get("run_id"),
+                        "match_reason": parsed.get("reason"),
+                        "matched_object_name": parsed.get("matched_object_name"),
+                    }
+        except Exception as exc:
+            logger.exception("Gemini semantic object search failed: %s", exc)
 
     # Compare the requested object name against every indexed object name.
     target = object_name.lower().strip()
@@ -124,7 +191,7 @@ def get_firestore_object(_firestore_client, prompt: str) -> dict[str, Any]:
 
 
 def get_plain_english_location_reply(payload: dict[str, Any], prompt: str) -> str:
-    """Create a concise plain-English answer about where the object was detected."""
+    """In a couple of sentencese, describe the object's location."""
     if not payload:
         return "I couldn't find a matching object in the Firestore data."
 
@@ -152,10 +219,31 @@ def get_plain_english_location_reply(payload: dict[str, Any], prompt: str) -> st
     return f"I found {object_name} in {location}."
 
 
+def extract_gemini_text(response: Any) -> str:
+    """Extract text from the Gemini SDK response in a way that works across response shapes."""
+    text = getattr(response, "text", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+
+    candidates = getattr(response, "candidates", None) or []
+    parts: list[str] = []
+    for candidate in candidates:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", []) or []:
+            part_text = getattr(part, "text", None)
+            if isinstance(part_text, str) and part_text.strip():
+                parts.append(part_text.strip())
+
+    if parts:
+        return "\n".join(parts).strip()
+
+    return ""
+
+
 def main() -> None:
     """Run the main chat UI flow for Project Aria object lookup."""
     st.title("💬 Project Aria Chatbox")
-    st.caption("Tell me what you are looking for and I will search the Firestore object data for the matching JSON payload.")
+    st.caption("Ask questions about the detected objects and I will use Gemini with the Firestore context to respond.")
 
     if not GCP_PROJECT:
         st.error("GCP_PROJECT not found in .env")
@@ -178,32 +266,44 @@ def main() -> None:
     if not GEMINI_API_KEY:
         st.sidebar.info("Gemini is optional here; Firestore object lookup is enabled without it.")
 
-    # Wait for the user to enter a question and then search Firestore for the object.
     if prompt := st.chat_input("What are you looking for?"):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # First do the structured Firestore lookup, then optionally enhance the result with Gemini.
-        payload = get_firestore_object(firestore_client, prompt)
+        payload = get_firestore_object(firestore_client, prompt, gemini_client=gemini_client)
+        extracted_result = payload.get("matched_object_name") or payload.get("object", {}).get("object_name") or ""
+        logging_prompt = None
         if gemini_client and GEMINI_API_KEY:
             try:
-                response = gemini_client.models.generate_content(
-                    model="gemini-3.5-flash-lite",
-                    contents=[
-                        "Use the Firestore payload below as hidden context to answer the user's question in a full sentence"
-                        "Mention the location and the scene",
+                gemini_prompt = "\n\n".join(
+                    [
+                        "Use the Firestore payload below as hidden context to answer the user's question.",
+                        "Write a rich response in 3 to 4 complete sentences.",
+                        "Be natural and conversational, mention the object name, location, and relevant context from the payload.",
                         json.dumps(payload, indent=2, default=str),
                         f"User question: {prompt}",
-                    ],
+                    ]
                 )
-                reply = response.text.strip()
+                logging_prompt = gemini_prompt
+                response = gemini_client.models.generate_content(
+                    model="gemini-2.0-flash",
+                    contents=[{"role": "user", "parts": [{"text": gemini_prompt}]}],
+                )
+                reply = extract_gemini_text(response)
+                if not reply:
+                    raise RuntimeError("Gemini returned no usable text")
             except Exception as exc:
-                logger.error("Gemini request failed: %s", exc)
+                logger.exception("Gemini request failed: %s", exc)
                 reply = get_plain_english_location_reply(payload, prompt)
         else:
             reply = get_plain_english_location_reply(payload, prompt)
 
+        with st.expander("🔎 Gemini debug view", expanded=True):
+            st.markdown("**Firestore payload**")
+            st.code(json.dumps(payload, indent=2, default=str), language="json")
+            st.markdown("**Gemini extraction result**")
+            st.code(extracted_result, language="text")
         st.session_state.messages.append({"role": "assistant", "content": reply})
         with st.chat_message("assistant"):
             st.markdown(reply)
