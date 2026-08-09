@@ -37,27 +37,41 @@ def get_clients():
 
 @st.cache_data(ttl=60)
 def get_firestore_events(_firestore_client, limit: int = 20):
-    """Fetch recent gaze event documents from Firestore for chat context."""
+    """Fetch recent object documents from Firestore for chat context."""
     if not _firestore_client:
         return []
 
-    # Query the main collection that stores the gaze-event metadata.
-    docs = _firestore_client.collection("gaze_events").limit(limit).stream()
     events = []
-    for doc in docs:
-        data = doc.to_dict() or {}
-        data["id"] = doc.id
-        events.append(data)
+    for collection_name in ["rag_object_collection", "gaze_events"]:
+        docs = _firestore_client.collection(collection_name).limit(limit).stream()
+        for doc in docs:
+            data = doc.to_dict() or {}
+            data["id"] = doc.id
+            data["__collection__"] = collection_name
+            events.append(data)
+        if events:
+            break
 
-    events.sort(key=lambda item: item.get("timestamp", 0) or 0, reverse=True)
+    events.sort(key=lambda item: str(item.get("timestamp", "")), reverse=True)
     return events
 
 
 def ingest_object_index(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Build a lightweight lookup index from object names to their Firestore payloads."""
+    """Build a lightweight lookup index from Firestore object payloads."""
     index = []
     for event in events:
-        # Each Firestore document contains a llm_analysis payload with scene metadata and object lists.
+        if event.get("object_name"):
+            index.append(
+                {
+                    "doc_id": event.get("id"),
+                    "scene_meta": event.get("scene_meta", {}),
+                    "object": event,
+                    "event": event,
+                    "source_collection": event.get("__collection__"),
+                }
+            )
+            continue
+
         llm_analysis = event.get("llm_analysis") or {}
         objects = llm_analysis.get("objects") or []
         for obj in objects:
@@ -69,58 +83,130 @@ def ingest_object_index(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "scene_meta": llm_analysis.get("scene_meta", {}),
                     "object": obj,
                     "event": event,
+                    "source_collection": event.get("__collection__"),
                 }
             )
     return index
 
 
-def extract_object_name(prompt: str) -> str:
-    """Extract the object name from the user's question so it can be matched in Firestore."""
-    cleaned = prompt.strip()
-    if not cleaned:
-        return ""
+def parse_gemini_json(text: str) -> dict[str, Any] | None:
+    """Extract a JSON object from Gemini response text."""
+    cleaned = text.replace("```json", "").replace("```", "").strip()
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1:
+        return None
 
-    for keyword in ["looking for", "find", "search for", "show me", "i need", "object"]:
-        if keyword in cleaned.lower():
-            match = re.search(rf"{re.escape(keyword)}\s+(.+)", cleaned, flags=re.IGNORECASE)
-            if match:
-                return match.group(1).strip("? .,:;!")
-
-    return cleaned.strip("? .,:;!")
+    candidate = cleaned[start : end + 1]
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
 
 
-def get_firestore_object(_firestore_client, prompt: str) -> dict[str, Any]:
+def search_with_gemini(gemini_client, prompt: str, object_index: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Use Gemini to semantically match the user's prompt against Firestore object metadata."""
+    if not gemini_client or not object_index:
+        return None
+
+    candidates = []
+    for entry in object_index[:20]:
+        obj = entry["object"]
+        candidates.append(
+            {
+                "doc_id": entry["doc_id"],
+                "collection": entry.get("source_collection"),
+                "object_name": obj.get("object_name"),
+                "object_description": obj.get("object_description"),
+                "object_location": obj.get("object_location"),
+                "scene_meta": entry.get("scene_meta", {}),
+                "run_id": entry.get("event", {}).get("run_id"),
+                "timestamp": entry.get("event", {}).get("timestamp"),
+            }
+        )
+
+    search_prompt = (
+        "You are a search assistant. The user asked a question and you have a set of Firestore object metadata records. "
+        "Use the records only to determine which object or objects best match the user question and answer clearly. "
+        "If multiple objects are requested, return all matching objects. If no object matches, say so. "
+        "Your answer must be valid JSON only, with these fields:\n"
+        "  - answer: a short plain-English reply\n"
+        "  - matched_objects: an array of selected object metadata records\n"
+        "  - source_doc_ids: an array of Firestore document ids or an empty array\n"
+        "  - run_ids: an array of associated run ids or an empty array\n"
+        "  - timestamps: an array of matching timestamps or an empty array\n"
+    )
+
+    try:
+        response = gemini_client.models.generate_content(
+            model="gemini-3.5-flash-lite",
+            contents=[search_prompt, json.dumps({"query": prompt, "objects": candidates}, indent=2, default=str)],
+        )
+        result = parse_gemini_json(response.text)
+        return result
+    except Exception as exc:
+        logger.error("Gemini semantic search failed: %s", exc)
+        return None
+
+
+def get_firestore_object(_firestore_client, prompt: str, gemini_client) -> dict[str, Any]:
     """Search Firestore for a matching object and return a structured payload for model context."""
     if not _firestore_client:
         return {"error": "Firestore is not configured yet. Add GCP_PROJECT to your .env file and restart the app."}
 
-    # Pull the latest event records and build a simple object lookup index.
     events = get_firestore_events(_firestore_client, limit=50)
     object_index = ingest_object_index(events)
-    object_name = extract_object_name(prompt)
+    if not object_index:
+        return {"error": "No object metadata was found in Firestore."}
 
-    if not object_name:
-        return {"error": "Please tell me the object name you want to look up."}
+    gemini_result = search_with_gemini(gemini_client, prompt, object_index)
+    if gemini_result and gemini_result.get("answer"):
+        return {
+            "answer": gemini_result["answer"],
+            "matches": gemini_result.get("matched_objects", []),
+            "source_doc_ids": gemini_result.get("source_doc_ids", []),
+            "run_ids": gemini_result.get("run_ids", []),
+            "timestamps": gemini_result.get("timestamps", []),
+        }
 
-    # Compare the requested object name against every indexed object name.
-    target = object_name.lower().strip()
+    # Fallback text matching for requests with multiple known objects.
+    prompt_lower = prompt.lower()
+    fallback_matches = []
+    seen_names = set()
     for entry in object_index:
         obj = entry.get("object", {})
         name = str(obj.get("object_name", "")).lower()
-        if target in name or name in target:
-            object_data = obj
-            scene_meta = entry.get("scene_meta", {})
-            event_data = entry.get("event", {})
+        if not name or name in seen_names:
+            continue
 
-            return {
-                "scene_meta": scene_meta,
-                "object": object_data,
-                "source_event_id": entry.get("doc_id"),
-                "timestamp": event_data.get("timestamp"),
-                "run_id": event_data.get("run_id"),
-            }
+        if name in prompt_lower or any(word in prompt_lower for word in re.findall(r"\w+", name)):
+            fallback_matches.append(entry)
+            seen_names.add(name)
 
-    return {"error": f"I could not find an object matching '{object_name}' in the Firestore data."}
+    if fallback_matches:
+        matched_objects = []
+        source_doc_ids = []
+        run_ids = []
+        timestamps = []
+        for entry in fallback_matches:
+            obj = entry.get("object", {})
+            matched_objects.append(obj)
+            source_doc_ids.append(entry.get("doc_id"))
+            run_ids.append(entry.get("event", {}).get("run_id"))
+            timestamps.append(entry.get("event", {}).get("timestamp"))
+
+        answer = "I found the following objects: " + ", ".join(
+            f'{obj.get("object_name", "object")} in {obj.get("object_location", "the scene")}' for obj in matched_objects
+        )
+        return {
+            "answer": answer,
+            "matches": matched_objects,
+            "source_doc_ids": source_doc_ids,
+            "run_ids": run_ids,
+            "timestamps": timestamps,
+        }
+
+    return {"error": "I could not find any objects matching that request in the Firestore data."}
 
 
 def get_plain_english_location_reply(payload: dict[str, Any], prompt: str) -> str:
@@ -130,6 +216,18 @@ def get_plain_english_location_reply(payload: dict[str, Any], prompt: str) -> st
 
     if payload.get("error"):
         return payload["error"]
+
+    if payload.get("answer"):
+        return payload["answer"]
+
+    matches = payload.get("matches") or []
+    if matches:
+        descriptions = []
+        for obj in matches:
+            name = obj.get("object_name") or "object"
+            location = obj.get("object_location") or obj.get("scene_meta", {}).get("location") or "the scene"
+            descriptions.append(f"{name} in {location}")
+        return "I found the following objects: " + ", ".join(descriptions)
 
     object_data = payload.get("object") or {}
     object_name = object_data.get("object_name") or "the object"
@@ -184,24 +282,10 @@ def main() -> None:
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # First do the structured Firestore lookup, then optionally enhance the result with Gemini.
-        payload = get_firestore_object(firestore_client, prompt)
-        if gemini_client and GEMINI_API_KEY:
-            try:
-                response = gemini_client.models.generate_content(
-                    model="gemini-3.5-flash-lite",
-                    contents=[
-                        "Use the Firestore payload below as hidden context to answer the user's question in plain English. "
-                        "Mention the likely location or scene only, and do not print JSON or raw metadata.",
-                        json.dumps(payload, indent=2, default=str),
-                        f"User question: {prompt}",
-                    ],
-                )
-                reply = response.text.strip()
-            except Exception as exc:
-                logger.error("Gemini request failed: %s", exc)
-                reply = get_plain_english_location_reply(payload, prompt)
-        else:
+        # First do the structured Firestore lookup, using Gemini for semantic search and response handling.
+        payload = get_firestore_object(firestore_client, prompt, gemini_client)
+        reply = payload.get("answer")
+        if not reply:
             reply = get_plain_english_location_reply(payload, prompt)
 
         st.session_state.messages.append({"role": "assistant", "content": reply})
