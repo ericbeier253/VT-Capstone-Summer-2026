@@ -76,7 +76,11 @@ class FirestoreRepository:
             "timestamp":
                 firestore.SERVER_TIMESTAMP,
 
-            "scene_meta": crop.object_data.scene_meta # Added by Sandeep
+            "scene_meta": { # Added by Sandeep
+                "description": crop.scene_meta.description,
+                "environment": crop.scene_meta.environment,
+                "lighting": crop.scene_meta.lighting
+            }
 
         }
 
