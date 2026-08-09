@@ -58,7 +58,7 @@ COLLECTION = "rag_object_collection_2"
 
 TEXT_EMBEDDING_FIELD = "text_embedding"
 
-EMBEDDING_MODEL = "gemini-embedding-2" #"gemini-embedding-001"
+EMBEDDING_MODEL = "gemini-embedding-2"
 
 # Must match the dimensionality used when creating
 # text_embedding vectors in Firestore.

@@ -39,7 +39,7 @@ class TextEmbedder:
     def __init__(
         self,
         client: genai.Client,
-        model: str = "gemini-embedding-001",
+        model: str = "gemini-embedding-2",
         output_dimensionality: int = 768,
     ):
         self.client = client
@@ -167,16 +167,17 @@ class TextEmbedder:
             for crop in crops
         ]
 
-        response = self.client.models.embed_content(
-            model=self.model,
-            contents=texts,
-            config=types.EmbedContentConfig(
-                task_type="RETRIEVAL_DOCUMENT",
-                output_dimensionality=self.output_dimensionality,
-            ),
-        )
-
-        embeddings = response.embeddings
+        embeddings = []
+        for text in texts:
+            response = self.client.models.embed_content(
+                model=self.model,
+                contents=text,
+                config=types.EmbedContentConfig(
+                    task_type="RETRIEVAL_DOCUMENT",
+                    output_dimensionality=self.output_dimensionality,
+                ),
+            )
+            embeddings.append(response.embeddings[0].values)
 
         if len(embeddings) != len(crops):
             raise RuntimeError(
@@ -185,8 +186,5 @@ class TextEmbedder:
                 f"received {len(embeddings)}."
             )
 
-        return [
-            embedding.values
-            for embedding in embeddings
-        ]
+        return embeddings
 
