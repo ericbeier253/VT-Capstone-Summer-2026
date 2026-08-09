@@ -12,7 +12,7 @@ class FirestoreRepository:
     def __init__(
         self,
         db: firestore.Client,
-        collection="object_collection", # HARDCODED
+        collection="rag_object_collection", # HARDCODED
     ):
 
         self.db = db
@@ -71,6 +71,8 @@ class FirestoreRepository:
 
             "timestamp":
                 firestore.SERVER_TIMESTAMP,
+
+            "scene_meta": crop.object_data.scene_meta # Added by Sandeep
 
         }
 

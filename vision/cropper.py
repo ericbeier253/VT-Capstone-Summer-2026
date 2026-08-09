@@ -6,7 +6,7 @@ from typing import List
 
 from PIL import Image
 
-from vision.schemas import ImageAnalysis, DetectedObject
+from vision.schemas import ImageAnalysis, DetectedObject, SceneMeta
 
 
 @dataclass(slots=True)
@@ -19,6 +19,7 @@ class CropResult:
     object_data: DetectedObject
     image_width: int
     image_height: int
+    scene_meta: SceneMeta # Added by Sandeep
 
 
 class ObjectCropper:
@@ -113,6 +114,8 @@ class ObjectCropper:
                         image_width=width,
 
                         image_height=height,
+
+                        scene_meta=analysis.scene_meta # Added by Sandeep
 
                     )
 
