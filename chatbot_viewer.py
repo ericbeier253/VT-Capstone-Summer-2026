@@ -324,8 +324,6 @@ def main() -> None:
         with st.expander("🔎 Gemini debug view", expanded=True):
             st.markdown("**Firestore payload**")
             st.code(json.dumps(payload, indent=2, default=str), language="json")
-            st.markdown("**Gemini extraction result**")
-            st.code(extracted_result, language="text")
         st.session_state.messages.append({"role": "assistant", "content": reply})
         with st.chat_message("assistant"):
             st.markdown(reply)
