@@ -12,7 +12,7 @@ class FirestoreRepository:
     def __init__(
         self,
         db: firestore.Client,
-        collection="rag_object_collection", # HARDCODED
+        collection="rag_object_collection_2", # HARDCODED
     ):
 
         self.db = db
