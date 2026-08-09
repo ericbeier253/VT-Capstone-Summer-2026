@@ -24,8 +24,10 @@ class FirestoreRepository:
 
         object_id: str,
 
-        embedding: list[float],
+        image_embedding: list[float],
 
+        text_embedding: list[float],
+        
         crop,
 
         run_id: str,
@@ -38,7 +40,9 @@ class FirestoreRepository:
 
             "object_id": object_id,
 
-            "embedding": Vector(embedding),
+            "embedding": Vector(image_embedding),
+
+            "text_embedding": Vector(text_embedding),
 
             "object_name":
                 crop.object_data.object_name,

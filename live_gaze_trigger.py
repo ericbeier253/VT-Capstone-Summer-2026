@@ -15,6 +15,7 @@ from google.cloud import firestore
 from vision import GeminiAnalyzer
 from vision.cropper import ObjectCropper
 from vision.embedder import DinoEmbedder
+from vision.text_embedder import TextEmbedder # Added by Sandeep
 from vision.matcher import ObjectMatcher
 from vision.firestore_repo import FirestoreRepository
 
@@ -80,6 +81,10 @@ def main():
 
     embedder = DinoEmbedder()
 
+    text_embedder = TextEmbedder( # Added by Sandeep
+        client=gemini_client,
+    )
+
     cropper = ObjectCropper()
 
     analyzer = GeminiAnalyzer(
@@ -95,6 +100,8 @@ def main():
         cropper,
 
         embedder,
+
+        text_embedder, # Added by Sandeep
 
         matcher,
 
