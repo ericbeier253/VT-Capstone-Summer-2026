@@ -61,13 +61,15 @@ class TextEmbedder:
             object_name:
                 "pen"
 
-            object_description:
+            (No longer saving)object_description:
                 "A black pen resting inside a desk organizer tray"
 
         becomes:
 
-            "Object name: pen. Object description: A black pen
+            "Object name: pen. (No longer saving)Object description: A black pen
              resting inside a desk organizer tray."
+        
+        Simplifying this to just including the object name - Sandeep
         """
 
         object_data = crop.object_data
@@ -77,30 +79,33 @@ class TextEmbedder:
             or ""
         ).strip()
 
-        object_description = (
-            object_data.object_description
-            or ""
-        ).strip()
+        #object_description = (
+        #    object_data.object_description
+        #    or ""
+        #).strip()
 
-        if not object_name and not object_description:
+        if not object_name: #and not object_description:
             raise ValueError(
                 "Crop contains no object_name or "
                 "object_description."
             )
 
-        if object_name and object_description:
-            return (
-                f"Object name: {object_name}. "
-                f"Object description: {object_description}."
-            )
+        #if object_name and object_description:
+        #    return (
+        #        f"Object name: {object_name}. "
+        #        f"Object description: {object_description}."
+        #    )
 
-        if object_name:
-            return f"Object name: {object_name}."
+        #if object_name:
+        #    return f"Object name: {object_name}."
 
-        return (
-            f"Object description: "
-            f"{object_description}."
-        )
+        #return (
+        #    f"Object description: "
+        #    f"{object_description}."
+        #)
+        
+        return f"{object_name}"
+
 
     # =========================================================
     # SINGLE OBJECT

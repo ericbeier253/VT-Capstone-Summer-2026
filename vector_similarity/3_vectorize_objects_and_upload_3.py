@@ -173,17 +173,20 @@ def embed_text(
         object_name:
             "pen"
 
-        object_description:
+        (No longer using this)object_description:
             "A black pen resting inside a desk organizer tray"
 
     The resulting embedding is stored separately from the
     DINOv2 image embedding.
+
+    Simplified the text to have only object name - Sandeep
     """
 
-    text = (
-        f"Object name: {object_name}. "
-        f"Object description: {object_description}"
-    )
+    #text = (
+    #    f"Object name: {object_name}. "
+    #    f"Object description: {object_description}"
+    #)
+    text = f"{object_name}"
 
     #response = genai_client.models.embed_content(
     #    model=TEXT_MODEL_NAME,
