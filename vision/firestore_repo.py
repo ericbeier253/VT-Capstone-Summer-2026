@@ -12,7 +12,7 @@ class FirestoreRepository:
     def __init__(
         self,
         db: firestore.Client,
-        collection="object_collection", # HARDCODED
+        collection="rag_object_collection_2", # HARDCODED
     ):
 
         self.db = db
@@ -24,8 +24,10 @@ class FirestoreRepository:
 
         object_id: str,
 
-        embedding: list[float],
+        image_embedding: list[float],
 
+        text_embedding: list[float],
+        
         crop,
 
         run_id: str,
@@ -38,7 +40,9 @@ class FirestoreRepository:
 
             "object_id": object_id,
 
-            "embedding": Vector(embedding),
+            "embedding": Vector(image_embedding),
+
+            "text_embedding": Vector(text_embedding),
 
             "object_name":
                 crop.object_data.object_name,
@@ -71,6 +75,12 @@ class FirestoreRepository:
 
             "timestamp":
                 firestore.SERVER_TIMESTAMP,
+
+            "scene_meta": { # Added by Sandeep
+                "description": crop.scene_meta.description,
+                "environment": crop.scene_meta.environment,
+                "lighting": crop.scene_meta.lighting
+            }
 
         }
 

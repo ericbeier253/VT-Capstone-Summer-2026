@@ -9,6 +9,7 @@ class AsyncEnrichmentWorker:
         analyzer,
         cropper,
         embedder,
+        text_embedder,
         matcher,
         repository,
         logger=None,
@@ -17,6 +18,7 @@ class AsyncEnrichmentWorker:
         self.analyzer = analyzer
         self.cropper = cropper
         self.embedder = embedder
+        self.text_embedder = text_embedder
         self.matcher = matcher
         self.repository = repository
         self.logger = logger
@@ -51,18 +53,21 @@ class AsyncEnrichmentWorker:
 
             crop_paths = [crop.crop_path for crop in crops]
             embeddings = self.embedder.embed_batch(crop_paths)
+            text_embeddings = self.text_embedder.embed_batch(crops)
 
-            for crop, embedding in zip(crops, embeddings):
+            for crop, image_embedding, text_embedding in zip(crops, embeddings, text_embeddings):
 
                 object_id = self.matcher.assign_object_id(
-                    embedding
+                    image_embedding
                 )
 
                 self.repository.save_object(
 
                     object_id=object_id,
 
-                    embedding=embedding,
+                    image_embedding=image_embedding,
+
+                    text_embedding=text_embedding,
 
                     crop=crop,
 
