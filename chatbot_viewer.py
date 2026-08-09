@@ -89,6 +89,19 @@ def ingest_object_index(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return index
 
 
+def extract_object_name(prompt: str) -> str:
+    """Extract the object name from the user's question so it can be matched in Firestore."""
+    cleaned = prompt.strip()
+    if not cleaned:
+        return ""
+
+    for keyword in ["looking for", "find", "search for", "show me", "i need", "object", "I forget", "Lost my"]:
+        if keyword in cleaned.lower():
+            match = re.search(rf"{re.escape(keyword)}\s+(.+)", cleaned, flags=re.IGNORECASE)
+            if match:
+                return match.group(1).strip("? .,:;!")
+
+    return cleaned.strip("? .,:;!")
 def parse_gemini_json(text: str) -> dict[str, Any] | None:
     """Extract a JSON object from Gemini response text."""
     cleaned = text.replace("```json", "").replace("```", "").strip()
@@ -210,7 +223,7 @@ def get_firestore_object(_firestore_client, prompt: str, gemini_client) -> dict[
 
 
 def get_plain_english_location_reply(payload: dict[str, Any], prompt: str) -> str:
-    """Create a concise plain-English answer about where the object was detected."""
+    """In a couple of sentencese, describe the object's location."""
     if not payload:
         return "I couldn't find a matching object in the Firestore data."
 
@@ -250,10 +263,31 @@ def get_plain_english_location_reply(payload: dict[str, Any], prompt: str) -> st
     return f"I found {object_name} in {location}."
 
 
+def extract_gemini_text(response: Any) -> str:
+    """Extract text from the Gemini SDK response in a way that works across response shapes."""
+    text = getattr(response, "text", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+
+    candidates = getattr(response, "candidates", None) or []
+    parts: list[str] = []
+    for candidate in candidates:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", []) or []:
+            part_text = getattr(part, "text", None)
+            if isinstance(part_text, str) and part_text.strip():
+                parts.append(part_text.strip())
+
+    if parts:
+        return "\n".join(parts).strip()
+
+    return ""
+
+
 def main() -> None:
     """Run the main chat UI flow for Project Aria object lookup."""
     st.title("💬 Project Aria Chatbox")
-    st.caption("Tell me what you are looking for and I will search the Firestore object data for the matching JSON payload.")
+    st.caption("Ask questions about the detected objects and I will use Gemini with the Firestore context to respond.")
 
     if not GCP_PROJECT:
         st.error("GCP_PROJECT not found in .env")
@@ -276,7 +310,6 @@ def main() -> None:
     if not GEMINI_API_KEY:
         st.sidebar.info("Gemini is optional here; Firestore object lookup is enabled without it.")
 
-    # Wait for the user to enter a question and then search Firestore for the object.
     if prompt := st.chat_input("What are you looking for?"):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
@@ -288,6 +321,11 @@ def main() -> None:
         if not reply:
             reply = get_plain_english_location_reply(payload, prompt)
 
+        with st.expander("🔎 Gemini debug view", expanded=True):
+            st.markdown("**Firestore payload**")
+            st.code(json.dumps(payload, indent=2, default=str), language="json")
+            st.markdown("**Gemini extraction result**")
+            st.code(extracted_result, language="text")
         st.session_state.messages.append({"role": "assistant", "content": reply})
         with st.chat_message("assistant"):
             st.markdown(reply)

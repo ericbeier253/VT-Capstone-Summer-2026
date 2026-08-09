@@ -1,7 +1,9 @@
 import streamlit as st
 from google.cloud import storage, firestore
 import os
+import io
 import pandas as pd
+from PIL import Image, ImageDraw
 
 st.set_page_config(page_title="Project Aria Gaze Viewer", layout="wide")
 
@@ -98,6 +100,16 @@ if selected_run:
         # Fetch events for this run
         docs = fs_client.collection("gaze_events").where("run_id", "==", selected_run).stream()
         
+        # Fetch tracked objects for this run
+        obj_docs = fs_client.collection("object_collection").where("run_id", "==", selected_run).stream()
+        objects_by_image = {}
+        for doc in obj_docs:
+            data = doc.to_dict()
+            basename = os.path.basename(data.get("parent_image", ""))
+            if basename not in objects_by_image:
+                objects_by_image[basename] = []
+            objects_by_image[basename].append(data)
+        
         events = []
         for doc in docs:
             data = doc.to_dict()
@@ -126,7 +138,37 @@ if selected_run:
                                     bucket = storage_client.bucket(bucket_name)
                                     blob = bucket.blob(blob_name)
                                     img_bytes = blob.download_as_bytes()
-                                    st.image(img_bytes, use_container_width=True)
+                                    
+                                    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+                                    draw = ImageDraw.Draw(img)
+                                    
+                                    basename = os.path.basename(img_uri)
+                                    frame_objects = objects_by_image.get(basename, [])
+                                    
+                                    for obj in frame_objects:
+                                        bboxes = obj.get("bounding_boxes", [])
+                                        uid = obj.get("object_id", "Unknown")
+                                        name = obj.get("object_name", "")
+                                        is_gaze_target = obj.get("is_gaze_target", False)
+                                        color = "red" if is_gaze_target else "lime"
+                                        
+                                        for bbox in bboxes:
+                                            # Gemini outputs normalized coords in [0, 1000] range
+                                            raw_x1 = bbox.get("x1", 0)
+                                            raw_y1 = bbox.get("y1", 0)
+                                            raw_x2 = bbox.get("x2", 0)
+                                            raw_y2 = bbox.get("y2", 0)
+                                            
+                                            # Scale to actual image pixel dimensions
+                                            x1 = int(img.width * raw_x1 / 1000)
+                                            y1 = int(img.height * raw_y1 / 1000)
+                                            x2 = int(img.width * raw_x2 / 1000)
+                                            y2 = int(img.height * raw_y2 / 1000)
+                                            
+                                            draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
+                                            draw.text((x1, max(0, y1-15)), f"{uid} | {name}", fill=color)
+                                    
+                                    st.image(img, use_container_width=True)
                                 except Exception as e:
                                     st.error(f"Failed to load image: {e}")
                     
@@ -152,8 +194,17 @@ if selected_run:
                                     if gaze_target:
                                         st.success(f"🎯 **Gaze Target:** {gaze_target.get('object_name')} - {gaze_target.get('object_description')}")
                                     
-                                    with st.expander(f"View all {len(objects)} detected objects"):
-                                        st.dataframe(pd.DataFrame(objects), use_container_width=True)
+                                    with st.expander(f"View {len(frame_objects)} Tracked Objects"):
+                                        if frame_objects:
+                                            display_objs = []
+                                            for obj in frame_objects:
+                                                display_objs.append({
+                                                    "UID": obj.get("object_id"),
+                                                    "Name": obj.get("object_name"),
+                                                    "Target?": obj.get("is_gaze_target"),
+                                                    "Description": obj.get("object_description")
+                                                })
+                                            st.dataframe(pd.DataFrame(display_objs), use_container_width=True)
                                         
                                 with st.expander("🐞 Debugger: Raw LLM Output"):
                                     st.json(llm_analysis)

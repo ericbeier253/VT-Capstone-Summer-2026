@@ -3,6 +3,7 @@ import time
 import argparse
 from google import genai
 
+
 import aria.sdk_gen2 as sdk_gen2
 import aria.stream_receiver as receiver
 
@@ -10,18 +11,35 @@ from storage_handler import StorageHandler
 from enrichment_worker import AsyncEnrichmentWorker
 from stream_callbacks import GazeSessionState
 
+from google.cloud import firestore
+from vision import GeminiAnalyzer
+from vision.cropper import ObjectCropper
+from vision.embedder import DinoEmbedder
+from vision.matcher import ObjectMatcher
+from vision.firestore_repo import FirestoreRepository
+
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-dir", type=str, required=True, help="Path to the output directory for this run session")
     parser.add_argument("--cloud", action="store_true", help="Use Google Cloud for storage")
     parser.add_argument("--local", action="store_true", help="Use local Postgres storage (default)")
+    parser.add_argument("--debug", action="store_true", help="Enable verbose debug logging for the worker")
     parser.add_argument("--usb", action="store_true", help="Connect to glasses over USB")
     parser.add_argument("--wifi", type=str, metavar="IP_ADDRESS", help="Connect to glasses over Wi-Fi at the specified IP address")
     args = parser.parse_args()
-    
+
     if not args.usb and not args.wifi:
         print("Error: You must specify either --usb or --wifi <IP_ADDRESS>")
         return
+
+    import logging
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    else:
+        logging.basicConfig(level=logging.INFO, format='%(message)s')
+    logger = logging.getLogger("Worker")
     
     # Load .env file
     env_path = os.path.join(os.path.dirname(__file__), '.env')
@@ -44,7 +62,47 @@ def main():
     if not api_key:
         print("Warning: GEMINI_API_KEY not found in .env. LLM enrichment will be disabled.")
         
-    enrichment_worker = AsyncEnrichmentWorker(storage_handler, gemini_client)
+    #enrichment_worker = AsyncEnrichmentWorker(storage_handler, gemini_client)
+    #enrichment_worker.start()
+
+    db = firestore.Client()
+
+    genai_client = genai.Client(
+        api_key=os.environ.get("GEMINI_API_KEY", "")
+    )
+
+    repository = FirestoreRepository(db)
+
+    matcher = ObjectMatcher(
+        repository,
+        threshold=0.15,
+    )
+
+    embedder = DinoEmbedder()
+
+    cropper = ObjectCropper()
+
+    analyzer = GeminiAnalyzer(
+        genai_client
+    )
+
+    enrichment_worker = AsyncEnrichmentWorker(
+
+        storage_handler,
+
+        analyzer,
+
+        cropper,
+
+        embedder,
+
+        matcher,
+
+        repository,
+
+        logger=logger,
+
+    )
     enrichment_worker.start()
     
     # Setup Run Directory
@@ -58,6 +116,7 @@ def main():
     raw_file_handle.flush()
     
     # Connect to device
+    print("Connecting to Aria Gen2 device...")
     device_client = sdk_gen2.DeviceClient()
     config = sdk_gen2.DeviceClientConfig()
     device_client.set_client_config(config)
