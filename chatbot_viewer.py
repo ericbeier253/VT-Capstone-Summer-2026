@@ -3,6 +3,7 @@ import logging
 import os
 import re
 from typing import Any
+from datetime import datetime
 
 import streamlit as st
 from google import genai
@@ -24,6 +25,7 @@ if os.path.exists(env_path):
                 os.environ[key] = val.strip().strip('"').strip("'")
 
 GCP_PROJECT = os.environ.get("GCP_PROJECT", "project-aria-501223")
+GCS_BUCKET = os.environ.get("GCS_BUCKET") or GCP_PROJECT
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 
@@ -77,6 +79,8 @@ def ingest_object_index(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for obj in objects:
             if not obj.get("object_name"):
                 continue
+            if not obj.get("img_path") and event.get("img_path"):
+                obj["img_path"] = event.get("img_path")
             index.append(
                 {
                     "doc_id": event.get("id"),
@@ -102,6 +106,85 @@ def extract_object_name(prompt: str) -> str:
                 return match.group(1).strip("? .,:;!")
 
     return cleaned.strip("? .,:;!")
+
+
+def extract_requested_items(prompt: str) -> list[str]:
+    """Extract a list of requested items from a user query."""
+    cleaned = prompt.strip().lower()
+    cleaned = re.sub(r"^(i\s+am\s+)?(looking|searching)\s+for\s+", "", cleaned)
+    cleaned = re.sub(r"^(find|find me|search for)\s+", "", cleaned)
+    parts = re.split(r",| and |&", cleaned)
+    items = [part.strip(" ?.!\n") for part in parts if part.strip()]
+    return [item for item in items if item]
+
+
+def score_object_match(item: str, obj: dict[str, Any]) -> int:
+    """Score how well an object matches a requested item phrase."""
+    item_lower = item.lower()
+    name = str(obj.get("object_name", "")).lower()
+    desc = str(obj.get("object_description", "")).lower()
+    location = str(obj.get("object_location", "")).lower()
+
+    score = 0
+    if item_lower == name:
+        score += 120
+    if item_lower in name:
+        score += 70
+    words = [w for w in re.findall(r"\w+", item_lower) if len(w) > 1]
+    if words:
+        if all(word in name for word in words):
+            score += 40
+        if all(word in desc for word in words):
+            score += 20
+        if all(word in location for word in words):
+            score += 10
+        score += sum(8 for word in words if word in name)
+        score += sum(3 for word in words if word in desc)
+        score += sum(2 for word in words if word in location)
+
+    # Prefer a more concise name when the query is generic and multiple monitors exist.
+    if item_lower in ["monitor", "laptop", "keys", "keyboard"] and item_lower in name:
+        name_len = len(name.split())
+        score += max(0, 10 - name_len)
+
+    # Prefer exact qualifiers if provided in the user request.
+    if "curved" in item_lower and "curved" in name:
+        score += 30
+    if "wall" in item_lower and "wall" in name:
+        score += 30
+    if "small" in item_lower and "small" in name:
+        score += 20
+    if "large" in item_lower and "large" in name:
+        score += 20
+
+    if item_lower in desc:
+        score += 25
+    if item_lower in location:
+        score += 10
+
+    # Give a small boost to object names that include the requested keyword at the start.
+    if name.startswith(item_lower):
+        score += 15
+
+    return score
+
+
+def find_best_match_for_item(item: str, matches: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Choose the best matching object for a requested item from a match list."""
+    best = None
+    best_score = -1
+    for obj in matches:
+        score = score_object_match(item, obj)
+        if score > best_score:
+            best_score = score
+            best = obj
+        elif score == best_score and best is not None:
+            best_name = str(best.get("object_name", "")).lower()
+            obj_name = str(obj.get("object_name", "")).lower()
+            if len(obj_name.split()) < len(best_name.split()):
+                best = obj
+    return best
+
 def parse_gemini_json(text: str) -> dict[str, Any] | None:
     """Extract a JSON object from Gemini response text."""
     cleaned = text.replace("```json", "").replace("```", "").strip()
@@ -123,7 +206,12 @@ def search_with_gemini(gemini_client, prompt: str, object_index: list[dict[str, 
         return None
 
     candidates = []
-    for entry in object_index[:20]:
+    sorted_index = sorted(
+        object_index,
+        key=lambda entry: entry.get("event", {}).get("timestamp", ""),
+        reverse=True,
+    )
+    for entry in sorted_index[:20]:
         obj = entry["object"]
         candidates.append(
             {
@@ -135,13 +223,16 @@ def search_with_gemini(gemini_client, prompt: str, object_index: list[dict[str, 
                 "scene_meta": entry.get("scene_meta", {}),
                 "run_id": entry.get("event", {}).get("run_id"),
                 "timestamp": entry.get("event", {}).get("timestamp"),
+                "img_path": entry.get("event", {}).get("img_path"),
             }
         )
 
     search_prompt = (
         "You are a search assistant. The user asked a question and you have a set of Firestore object metadata records. "
         "Use the records only to determine which object or objects best match the user question and answer clearly. "
-        "If multiple objects are requested, return all matching objects. If no object matches, say so. "
+        "Prefer more recent images when returning matches, based on the timestamp field. Use the newest matching image for each object. "
+        "If the user asks for multiple items, return results for each distinct requested object rather than only the single newest object. "
+        "If no object matches, say so. "
         "Your answer must be valid JSON only, with these fields:\n"
         "  - answer: a short plain-English reply\n"
         "  - matched_objects: an array of selected object metadata records\n"
@@ -174,12 +265,30 @@ def get_firestore_object(_firestore_client, prompt: str, gemini_client) -> dict[
 
     gemini_result = search_with_gemini(gemini_client, prompt, object_index)
     if gemini_result and gemini_result.get("answer"):
+        run_ids = gemini_result.get("run_ids", []) or []
+        timestamps = gemini_result.get("timestamps", []) or []
+        matched_objects = gemini_result.get("matched_objects", []) or []
+
+        if timestamps and matched_objects and len(timestamps) == len(matched_objects):
+            latest_by_name: dict[str, dict[str, Any]] = {}
+            for obj, ts, rid in zip(matched_objects, timestamps, run_ids):
+                name = str(obj.get("object_name", "")).lower()
+                if not name:
+                    continue
+                if name not in latest_by_name or ts > latest_by_name[name]["timestamp"]:
+                    latest_by_name[name] = {"object": obj, "timestamp": ts, "run_id": rid}
+
+            if latest_by_name:
+                matched_objects = [entry["object"] for entry in latest_by_name.values()]
+                run_ids = [entry["run_id"] for entry in latest_by_name.values()]
+                timestamps = [entry["timestamp"] for entry in latest_by_name.values()]
+
         return {
             "answer": gemini_result["answer"],
-            "matches": gemini_result.get("matched_objects", []),
+            "matches": matched_objects,
             "source_doc_ids": gemini_result.get("source_doc_ids", []),
-            "run_ids": gemini_result.get("run_ids", []),
-            "timestamps": gemini_result.get("timestamps", []),
+            "run_ids": run_ids,
+            "timestamps": timestamps,
         }
 
     # Fallback text matching for requests with multiple known objects.
@@ -197,18 +306,30 @@ def get_firestore_object(_firestore_client, prompt: str, gemini_client) -> dict[
             seen_names.add(name)
 
     if fallback_matches:
+        latest_by_name: dict[str, dict[str, Any]] = {}
+        for entry in fallback_matches:
+            obj = entry.get("object", {})
+            name = str(obj.get("object_name", "")).lower()
+            if not name:
+                continue
+            ts = entry.get("event", {}).get("timestamp", "")
+            run_id = entry.get("event", {}).get("run_id")
+            if name not in latest_by_name or ts > latest_by_name[name]["timestamp"]:
+                latest_by_name[name] = {"entry": entry, "timestamp": ts, "run_id": run_id}
+
         matched_objects = []
         source_doc_ids = []
         run_ids = []
         timestamps = []
-        for entry in fallback_matches:
+        for record in latest_by_name.values():
+            entry = record["entry"]
             obj = entry.get("object", {})
             matched_objects.append(obj)
             source_doc_ids.append(entry.get("doc_id"))
-            run_ids.append(entry.get("event", {}).get("run_id"))
-            timestamps.append(entry.get("event", {}).get("timestamp"))
+            run_ids.append(record["run_id"])
+            timestamps.append(record["timestamp"])
 
-        answer = "I found the following objects: " + ", ".join(
+        answer = "Found the " + ", ".join(
             f'{obj.get("object_name", "object")} in {obj.get("object_location", "the scene")}' for obj in matched_objects
         )
         return {
@@ -223,24 +344,84 @@ def get_firestore_object(_firestore_client, prompt: str, gemini_client) -> dict[
 
 
 def get_plain_english_location_reply(payload: dict[str, Any], prompt: str) -> str:
-    """In a couple of sentencese, describe the object's location."""
+    """Return a clearer response, with sections for multiple matching objects."""
     if not payload:
         return "I couldn't find a matching object in the Firestore data."
 
     if payload.get("error"):
         return payload["error"]
 
+    matches = payload.get("matches") or []
+    run_ids = payload.get("run_ids") or []
+
+    if matches:
+        requested_items = extract_requested_items(prompt)
+        if requested_items:
+            def parse_timestamp(ts: str) -> datetime | None:
+                if not ts:
+                    return None
+                try:
+                    return datetime.fromisoformat(str(ts))
+                except Exception:
+                    return None
+
+            def get_latest_entry_for_name(name: str, match_list: list[dict[str, Any]]) -> dict[str, Any] | None:
+                name_l = (name or "").lower()
+                candidates = [m for m in match_list if str(m.get("object_name", "")).lower() == name_l]
+                if not candidates:
+                    return None
+                best = None
+                best_ts = None
+                for c in candidates:
+                    ts = parse_timestamp(c.get("timestamp") or c.get("event", {}).get("timestamp"))
+                    if ts is None:
+                        continue
+                    if best_ts is None or ts > best_ts:
+                        best_ts = ts
+                        best = c
+                return best or candidates[0]
+
+            reply_lines = []
+            for item in requested_items:
+                best_match = find_best_match_for_item(item, matches)
+                if best_match:
+                    latest = get_latest_entry_for_name(best_match.get("object_name", ""), matches)
+                    use = latest or best_match
+                    name = use.get("object_name") or "Unknown object"
+                    location = use.get("object_location") or use.get("scene_meta", {}).get("location") or "an unknown location"
+                    reply_lines.append(f"I found {name} in {location}.")
+            if reply_lines:
+                return "\n".join(reply_lines)
+
+        lines = [f"### Found {len(matches)} matching object{'s' if len(matches) != 1 else ''}", ""]
+        for index, obj in enumerate(matches, start=1):
+            name = obj.get("object_name") or "Unknown object"
+            description = obj.get("object_description") or "No description available."
+            location = obj.get("object_location") or obj.get("scene_meta", {}).get("location") or "unknown location"
+            object_run_id = run_ids[index - 1] if index - 1 < len(run_ids) else None
+            raw_img_path = obj.get("crop_path")
+            gcs_uri = resolve_gcs_uri(raw_img_path)
+
+            lines.append(f"**{index}. {name}**")
+            lines.append(f"- Description: {description}")
+            lines.append(f"- Location: {location}")
+            if object_run_id:
+                lines.append(f"- Run ID: `{object_run_id}`")
+            if gcs_uri:
+                lines.append(f"- Image GCS path: `{gcs_uri}`")
+            lines.append("")
+
+        source_docs = payload.get("source_doc_ids") or []
+        if source_docs:
+            lines.append("### Source Firestore document IDs")
+            for doc_id in source_docs:
+                lines.append(f"- `{doc_id}`")
+            lines.append("")
+
+        return "\n".join(lines)
+
     if payload.get("answer"):
         return payload["answer"]
-
-    matches = payload.get("matches") or []
-    if matches:
-        descriptions = []
-        for obj in matches:
-            name = obj.get("object_name") or "object"
-            location = obj.get("object_location") or obj.get("scene_meta", {}).get("location") or "the scene"
-            descriptions.append(f"{name} in {location}")
-        return "I found the following objects: " + ", ".join(descriptions)
 
     object_data = payload.get("object") or {}
     object_name = object_data.get("object_name") or "the object"
