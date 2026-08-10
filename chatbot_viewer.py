@@ -1,3 +1,4 @@
+import io
 import json
 import logging
 import os
@@ -5,8 +6,10 @@ import re
 from typing import Any
 
 import streamlit as st
+from datetime import timedelta
+
 from google import genai
-from google.cloud import firestore
+from google.cloud import firestore, storage
 from RAG_delivery.object_search import search_object, get_latest_distinct_objects, get_results
 
 logging.basicConfig(level=logging.INFO)
@@ -116,16 +119,37 @@ def build_gemini_prompt(query: str, search_payload: dict[str, Any]) -> str:
     )
 
 
-def normalize_crop_path(crop_path: str) -> str:
-    """Normalize a crop path into bucket_name/run_id/gaze_trigger."""
+def generate_signed_gcs_url(bucket_name: str, object_path: str) -> str:
+    """Generate a signed URL for a Google Cloud Storage object."""
+    if not bucket_name or not object_path:
+        return ""
+
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(object_path)
+
+    try:
+        return blob.generate_signed_url(
+            expiration=timedelta(hours=1),
+            version="v4",
+        )
+    except Exception:
+        return f"https://storage.googleapis.com/{bucket_name}/{object_path}"
+
+
+def build_public_url_from_crop_path(crop_path: str) -> str:
+    """Build a complete public or signed Storage URL for the crop path."""
     if not isinstance(crop_path, str):
-        return crop_path
+        return ""
 
     path = crop_path.strip()
     if not path:
-        return crop_path
+        return ""
 
-    bucket_name = os.environ.get("GCS_BUCKET") or os.environ.get("BUCKET_NAME")
+    if path.startswith("https://storage.googleapis.com/"):
+        return path
+
+    bucket_name = os.environ.get("GCS_BUCKET") or os.environ.get("BUCKET_NAME") or "project-aria-gaze-photos-eb-01"
 
     if path.startswith("gs://"):
         path = path[len("gs://") :]
@@ -135,32 +159,40 @@ def normalize_crop_path(crop_path: str) -> str:
             path = ""
 
     segments = [segment for segment in path.split("/") if segment]
+    if segments and segments[0].startswith("project-aria-gaze-photos"):
+        bucket_name = segments[0]
+        segments = segments[1:]
+
     run_id = next((segment for segment in segments if segment.startswith("run_")), None)
     gaze_trigger = next((segment for segment in segments if segment.startswith("gaze_trigger")), None)
 
     if run_id and gaze_trigger:
-        if bucket_name:
-            return f"{bucket_name}/{run_id}/{gaze_trigger}"
-        return f"{run_id}/{gaze_trigger}"
+        if not gaze_trigger.lower().endswith(".jpg"):
+            gaze_trigger += ".jpg"
+        return generate_signed_gcs_url(bucket_name, f"{run_id}/{gaze_trigger}")
 
     if run_id and segments:
         fallback_trigger = segments[-1]
-        if bucket_name:
-            return f"{bucket_name}/{run_id}/{fallback_trigger}"
-        return f"{run_id}/{fallback_trigger}"
+        if not fallback_trigger.lower().endswith(".jpg"):
+            fallback_trigger += ".jpg"
+        return generate_signed_gcs_url(bucket_name, f"{run_id}/{fallback_trigger}")
 
-    return crop_path
+    if segments:
+        public_path = "/".join(segments)
+        return generate_signed_gcs_url(bucket_name, public_path)
+
+    return f"https://storage.googleapis.com/{bucket_name}/"
 
 
-def get_normalized_crop_paths(payload: dict[str, Any]) -> list[str]:
-    """Collect normalized crop paths from the get_object JSON response without modifying it."""
-    normalized_paths: list[str] = []
+def build_public_url(payload: dict[str, Any]) -> list[str]:
+    """Collect public or signed URLs for crop_path values in the get_object JSON response."""
+    public_urls: list[str] = []
 
     def walk(value: Any) -> None:
         if isinstance(value, dict):
             for key, child in value.items():
                 if key == "crop_path" and isinstance(child, str):
-                    normalized_paths.append(normalize_crop_path(child))
+                    public_urls.append(build_public_url_from_crop_path(child))
                 else:
                     walk(child)
         elif isinstance(value, list):
@@ -168,7 +200,58 @@ def get_normalized_crop_paths(payload: dict[str, Any]) -> list[str]:
                 walk(item)
 
     walk(payload)
-    return normalized_paths
+    return public_urls
+
+
+def get_crop_entries(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Collect crop entries with crop_path and bounding boxes data."""
+    entries: list[dict[str, Any]] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            if "crop_path" in value and isinstance(value["crop_path"], str):
+                entries.append(
+                    {
+                        "crop_path": value["crop_path"],
+                        "bounding_box": value.get("bounding_boxes") or value.get("boundary_box") or value.get("bounding_box"),
+                    }
+                )
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(payload)
+    return entries
+
+
+def render_annotated_image(image_url: str, bounding_box: dict[str, Any] | None) -> None:
+    """Render a crop image and draw a red boundary box if available."""
+    if not bounding_box:
+        st.image(image_url, use_column_width=True)
+        return
+
+    try:
+        from PIL import Image, ImageDraw
+        import requests
+
+        response = requests.get(image_url, timeout=10)
+        response.raise_for_status()
+        image = Image.open(io.BytesIO(response.content)).convert("RGB")
+        draw = ImageDraw.Draw(image)
+
+        print(f"Drawing bounding box: {bounding_box}, path {image_url}")
+        x1 = int(bounding_box.get("x1", 0))
+        y1 = int(bounding_box.get("y1", 0))
+        x2 = int(bounding_box.get("x2", 0))
+        y2 = int(bounding_box.get("y2", 0))
+
+        # Draw a red rectangle outline using the provided pixel coordinates.
+        draw.rectangle([x1, y1, x2, y2], outline="red", width=4)
+        st.image(image, use_column_width=True)
+    except Exception:
+        st.image(image_url, use_column_width=True)
 
 
 def ask_gemini_for_reply(gemini_client, prompt: str) -> str:
@@ -299,7 +382,8 @@ def main() -> None:
 
         # Use object_search to produce a structured search payload, then give that JSON to Gemini
         payload = get_firestore_object(firestore_client, prompt)
-        image_paths = get_normalized_crop_paths(payload)
+        crop_entries = get_crop_entries(payload)
+        image_paths = [build_public_url_from_crop_path(entry["crop_path"]) for entry in crop_entries if entry.get("crop_path")]
         print(f"Normalized crop paths: {image_paths}")
 
         gemini_prompt_text = ""
@@ -322,20 +406,12 @@ def main() -> None:
         st.session_state.messages.append({"role": "assistant", "content": reply})
         with st.chat_message("assistant"):
             st.markdown(reply)
-
-    st.sidebar.header("Status")
-    st.sidebar.caption(f"Firestore project: {GCP_PROJECT or 'not configured'}")
-    st.sidebar.caption(f"Gemini configured: {'yes' if GEMINI_API_KEY else 'no'}")
-    st.sidebar.caption(f"Recent Firestore events: {len(get_firestore_events(firestore_client, limit=20))}")
-
-    if st.sidebar.button("Clear chat"):
-        st.session_state.messages = [
-            {
-                "role": "assistant",
-                "content": "What are you looking for?",
-            }
-        ]
-        st.rerun()
+            if crop_entries:
+                with st.expander("🖼️ Image view", expanded=True):
+                    for idx, entry in enumerate(crop_entries):
+                        image_url = build_public_url_from_crop_path(entry["crop_path"])
+                        st.markdown(f"**Image {idx + 1}: {entry['crop_path']}**")
+                        render_annotated_image(image_url, entry.get("bounding_box"))
 
 
 if __name__ == "__main__":
