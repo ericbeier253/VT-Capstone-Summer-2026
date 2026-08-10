@@ -407,8 +407,8 @@ def main() -> None:
         with st.chat_message("assistant"):
             st.markdown(reply)
             if crop_entries:
-                with st.expander("🖼️ Image view", expanded=True):
-                    for idx, entry in enumerate(crop_entries):
+                with st.expander("🖼️ Image view (top 3 ranked images)", expanded=True):
+                    for idx, entry in enumerate(crop_entries[:3]):
                         image_url = build_public_url_from_crop_path(entry["crop_path"])
                         st.markdown(f"**Image {idx + 1}: {entry['crop_path']}**")
                         render_annotated_image(image_url, entry.get("bounding_box"))
