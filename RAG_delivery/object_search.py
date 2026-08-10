@@ -655,84 +655,94 @@ def get_latest_distinct_objects(
 # PRINT RESULTS
 # ============================================================
 
-def print_results(
+def get_results(
     object_name: str,
     matches: list[Any],
-):
+) -> dict[str, Any]:
     """
-    Print Firestore documents and similarity distances.
+    Print Firestore documents and similarity distances and return
+    structured JSON-friendly results.
     """
+
+    payload: dict[str, Any] = {
+        "object_name": object_name,
+        "match_count": len(matches),
+        "results": [],
+    }
 
     print()
-
-    print(
-        f"RESULTS FOR: {object_name}"
-    )
-
+    print(f"RESULTS FOR: {object_name}")
     print(
         f"Matches within cosine distance "
         f"{DISTANCE_THRESHOLD}: "
         f"{len(matches)}"
     )
-
     print("=" * 70)
 
-
     if not matches:
+        print("No matching objects found.")
+        payload["message"] = "No matching objects found."
+        print(json.dumps(payload, indent=2, default=str))
+        return payload
 
-        print(
-            "No matching objects found."
-        )
+    keep_fields = [
+        "bounding_boxes",
+        "crop_path",
+        "is_gaze_target",
+        "object_description",
+        "object_id",
+        "object_location",
+        "object_name",
+        "parent_image",
+        "run_id",
+        "scene_meta",
+        "timestamp",
+    ]
 
-        return
+    def normalize_crop_path(crop_path: str) -> str:
+        parts = crop_path.split("/")
+        if not parts:
+            return crop_path
 
+        # Drop first and last items
+        normalized_parts = parts[1:-1]
+        if not normalized_parts:
+            return crop_path
 
-    for rank, (distance, doc) in enumerate(
-        matches,
-        start=1,
-    ):
+        # If the original path was a gs:// URL, preserve the bucket name
+        if crop_path.startswith("gs://"):
+            bucket = normalized_parts[0]
+            remaining = normalized_parts[1:]
+            if remaining:
+                return "/".join([bucket, *remaining])
+            return bucket
 
-        data = doc.to_dict()
+        return "/".join(normalized_parts)
 
-        # Remove the distance field from the displayed
-        # Firestore document because it was added by the
-        # vector query rather than being part of the stored
-        # document.
-
-        data.pop(
-            "vector_distance",
-            None,
-        )
-
-
-        print()
-        print(
-            f"Rank #{rank}"
-        )
-
-        print(
-            f"Cosine distance: "
-            f"{distance:.6f}"
-        )
-
-        print(
-            f"Document ID: "
-            f"{doc.id}"
-        )
-
-        keep_fields = ["bounding_boxes", "crop_path", "is_gaze_target", 
-                       "object_description", "object_id", "object_location", 
-                       "object_name", "parent_image", "run_id", 
-                       "scene_meta", "timestamp"]
+    for rank, (distance, doc) in enumerate(matches, start=1):
+        data = doc.to_dict() or {}
+        data.pop("vector_distance", None)
         filtered_data = {key: data[key] for key in keep_fields if key in data}
 
-        print(
-            json.dumps(
-                filtered_data, #data,
-                indent=2,
-                default=str,
-            )
-        )
+        if "crop_path" in filtered_data:
+            filtered_data["crop_path"] = normalize_crop_path(filtered_data["crop_path"])
+
+        entry = {
+            "rank": rank,
+            "distance": distance,
+            "document_id": doc.id,
+            "fields": filtered_data,
+        }
+        payload["results"].append(entry)
+
+        print()
+        print(f"Rank #{rank}")
+        print(f"Cosine distance: {distance:.6f}")
+        print(f"Document ID: {doc.id}")
+        print(json.dumps(filtered_data, indent=2, default=str))
+
+    print(json.dumps(payload, indent=2, default=str))
+    return payload
 
 
 # ============================================================
@@ -825,7 +835,7 @@ def main():
             #    object_name
             #)
 
-            #print_results(
+            #get_results(
             #    object_name,
             #    matches,
             #)
@@ -848,7 +858,7 @@ def main():
                 f"distinct objects."
             )
 
-            print_results(
+            get_results(
                 object_name,
                 latest_objects,
             )

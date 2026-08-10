@@ -7,6 +7,7 @@ from typing import Any
 import streamlit as st
 from google import genai
 from google.cloud import firestore
+from RAG_delivery.object_search import search_object, get_latest_distinct_objects, get_results
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -102,124 +103,50 @@ def extract_object_name(prompt: str) -> str:
                 return match.group(1).strip("? .,:;!")
 
     return cleaned.strip("? .,:;!")
-def parse_gemini_json(text: str) -> dict[str, Any] | None:
-    """Extract a JSON object from Gemini response text."""
-    cleaned = text.replace("```json", "").replace("```", "").strip()
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1:
-        return None
 
-    candidate = cleaned[start : end + 1]
-    try:
-        return json.loads(candidate)
-    except json.JSONDecodeError:
-        return None
-
-
-def search_with_gemini(gemini_client, prompt: str, object_index: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Use Gemini to semantically match the user's prompt against Firestore object metadata."""
-    if not gemini_client or not object_index:
-        return None
-
-    candidates = []
-    for entry in object_index[:20]:
-        obj = entry["object"]
-        candidates.append(
-            {
-                "doc_id": entry["doc_id"],
-                "collection": entry.get("source_collection"),
-                "object_name": obj.get("object_name"),
-                "object_description": obj.get("object_description"),
-                "object_location": obj.get("object_location"),
-                "scene_meta": entry.get("scene_meta", {}),
-                "run_id": entry.get("event", {}).get("run_id"),
-                "timestamp": entry.get("event", {}).get("timestamp"),
-            }
-        )
-
-    search_prompt = (
-        "You are a search assistant. The user asked a question and you have a set of Firestore object metadata records. "
-        "Use the records only to determine which object or objects best match the user question and answer clearly. "
-        "If multiple objects are requested, return all matching objects. If no object matches, say so. "
-        "Your answer must be valid JSON only, with these fields:\n"
-        "  - answer: a short plain-English reply\n"
-        "  - matched_objects: an array of selected object metadata records\n"
-        "  - source_doc_ids: an array of Firestore document ids or an empty array\n"
-        "  - run_ids: an array of associated run ids or an empty array\n"
-        "  - timestamps: an array of matching timestamps or an empty array\n"
+def build_gemini_prompt(query: str, search_payload: dict[str, Any]) -> str:
+    """Build the prompt used to ask Gemini for the final location reply."""
+    search_json = json.dumps(search_payload, indent=2, default=str)
+    return (
+        "You are getting the results of a sematic search on objects. Based on the json given, describe the location of the object."
+        "\n\nSearch payload:\n"
+        f"{search_json}\n\n"
+        "User question:\n"
+        f"{query}\n"
     )
+
+
+def ask_gemini_for_reply(gemini_client, prompt: str) -> str:
+    """Ask Gemini for the final chat reply using structured search context."""
+    if not gemini_client:
+        return ""
 
     try:
         response = gemini_client.models.generate_content(
             model="gemini-3.5-flash-lite",
-            contents=[search_prompt, json.dumps({"query": prompt, "objects": candidates}, indent=2, default=str)],
+            contents=[prompt],
         )
-        result = parse_gemini_json(response.text)
-        return result
+        return extract_gemini_text(response) or ""
     except Exception as exc:
-        logger.error("Gemini semantic search failed: %s", exc)
-        return None
+        logger.error("Gemini location reply failed: %s", exc)
+        return ""
 
 
-def get_firestore_object(_firestore_client, prompt: str, gemini_client) -> dict[str, Any]:
-    """Search Firestore for a matching object and return a structured payload for model context."""
+def get_firestore_object(_firestore_client, prompt: str) -> dict[str, Any]:
+    """Search Firestore for a matching object and return a structured payload for model context using object_search helpers."""
     if not _firestore_client:
         return {"error": "Firestore is not configured yet. Add GCP_PROJECT to your .env file and restart the app."}
 
-    events = get_firestore_events(_firestore_client, limit=50)
-    object_index = ingest_object_index(events)
-    if not object_index:
-        return {"error": "No object metadata was found in Firestore."}
+    # Extract a concise object name from the user's prompt
+    requested_name = extract_object_name(prompt)
+    if not requested_name:
+        return {"error": "No object name could be extracted from the query."}
 
-    gemini_result = search_with_gemini(gemini_client, prompt, object_index)
-    if gemini_result and gemini_result.get("answer"):
-        return {
-            "answer": gemini_result["answer"],
-            "matches": gemini_result.get("matched_objects", []),
-            "source_doc_ids": gemini_result.get("source_doc_ids", []),
-            "run_ids": gemini_result.get("run_ids", []),
-            "timestamps": gemini_result.get("timestamps", []),
-        }
-
-    # Fallback text matching for requests with multiple known objects.
-    prompt_lower = prompt.lower()
-    fallback_matches = []
-    seen_names = set()
-    for entry in object_index:
-        obj = entry.get("object", {})
-        name = str(obj.get("object_name", "")).lower()
-        if not name or name in seen_names:
-            continue
-
-        if name in prompt_lower or any(word in prompt_lower for word in re.findall(r"\w+", name)):
-            fallback_matches.append(entry)
-            seen_names.add(name)
-
-    if fallback_matches:
-        matched_objects = []
-        source_doc_ids = []
-        run_ids = []
-        timestamps = []
-        for entry in fallback_matches:
-            obj = entry.get("object", {})
-            matched_objects.append(obj)
-            source_doc_ids.append(entry.get("doc_id"))
-            run_ids.append(entry.get("event", {}).get("run_id"))
-            timestamps.append(entry.get("event", {}).get("timestamp"))
-
-        answer = "I found the following objects: " + ", ".join(
-            f'{obj.get("object_name", "object")} in {obj.get("object_location", "the scene")}' for obj in matched_objects
-        )
-        return {
-            "answer": answer,
-            "matches": matched_objects,
-            "source_doc_ids": source_doc_ids,
-            "run_ids": run_ids,
-            "timestamps": timestamps,
-        }
-
-    return {"error": "I could not find any objects matching that request in the Firestore data."}
+    # Use the RAG_delivery.object_search functions to perform search and format results
+    matches = search_object(requested_name)
+    latest = get_latest_distinct_objects(matches)
+    payload = get_results(requested_name, latest)
+    return payload
 
 
 def get_plain_english_location_reply(payload: dict[str, Any], prompt: str) -> str:
@@ -315,17 +242,26 @@ def main() -> None:
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # First do the structured Firestore lookup, using Gemini for semantic search and response handling.
-        payload = get_firestore_object(firestore_client, prompt, gemini_client)
-        reply = payload.get("answer")
-        if not reply:
-            reply = get_plain_english_location_reply(payload, prompt)
+        # Use object_search to produce a structured search payload, then give that JSON to Gemini
+        payload = get_firestore_object(firestore_client, prompt)
 
-        with st.expander("🔎 Gemini debug view", expanded=True):
+        gemini_prompt_text = ""
+        gemini_reply = ""
+        if gemini_client:
+            gemini_prompt_text = build_gemini_prompt(prompt, payload)
+            gemini_reply = ask_gemini_for_reply(gemini_client, gemini_prompt_text)
+            reply = gemini_reply or payload.get("answer") or get_plain_english_location_reply(payload, prompt)
+        else:
+            reply = payload.get("answer") or get_plain_english_location_reply(payload, prompt)
+
+        with st.expander("🔎 Debug view", expanded=True):
             st.markdown("**Firestore payload**")
             st.code(json.dumps(payload, indent=2, default=str), language="json")
-            st.markdown("**Gemini extraction result**")
-            st.code(extracted_result, language="text")
+            if gemini_client:
+                st.markdown("**Gemini prompt**")
+                st.code(gemini_prompt_text, language="text")
+                st.markdown("**Gemini reply**")
+                st.code(gemini_reply, language="text")
         st.session_state.messages.append({"role": "assistant", "content": reply})
         with st.chat_message("assistant"):
             st.markdown(reply)
