@@ -32,7 +32,7 @@ RESULTS_FOLDER = ROOT_DIR / "results"
 
 SERVICE_ACCOUNT = ROOT_DIR / ".secrets" / "aria-uploader-key.json"
 
-COLLECTION = "rag_object_collection_2"
+COLLECTION = "rag_object_collection"
 
 IMAGE_MODEL_NAME = "facebook/dinov2-base"
 TEXT_MODEL_NAME = "gemini-embedding-2" #"text-embedding-004"

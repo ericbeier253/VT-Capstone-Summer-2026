@@ -30,4 +30,4 @@ if __name__ == "__main__":
   # Replace 'your_collection_name' with your actual target collection
   #delete_entire_collection("your_collection_name")
   #delete_entire_collection("rag_object_collection")
-  delete_entire_collection("rag_object_collection_2")
+  delete_entire_collection("rag_object_collection")

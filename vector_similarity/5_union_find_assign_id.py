@@ -24,7 +24,7 @@ PROJECT_ID = os.environ["GCP_PROJECT"] #"Project Aria"
 
 SERVICE_ACCOUNT = ".secrets/aria-uploader-key.json"
 
-COLLECTION = "rag_object_collection_2" #"rag_object_collection" #"object_collection"
+COLLECTION = "rag_object_collection" # "object_collection"
 
 TOP_K = 30
 

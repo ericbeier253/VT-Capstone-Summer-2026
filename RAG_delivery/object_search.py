@@ -54,7 +54,7 @@ SERVICE_ACCOUNT = (
     ROOT_DIR / ".secrets" / "aria-uploader-key.json"
 )
 
-COLLECTION = "rag_object_collection_2"
+COLLECTION = "rag_object_collection"
 
 TEXT_EMBEDDING_FIELD = "text_embedding"
 
@@ -189,10 +189,9 @@ You are a query parser for an object-location retrieval system.
 The system stores physical objects that were observed by
 a wearable camera.
 
-Given a user's question, determine whether it is a valid
-query asking about one or more physical objects.
+Given a user's question, determine whether it mentions or is asking about one or more physical objects (even if they are asking about an event, action, state, or time involving that object).
 
-If it is valid:
+If it contains a physical object:
 - Extract ONLY the object names being requested.
 - Do not include verbs.
 - Do not include locations.
@@ -214,28 +213,26 @@ Return:
 }
 
 User:
-"Can you find my wallet?"
+"What time did I take my nasal spray?"
 
 Return:
 {
   "objects": [
-    "wallet"
+    "nasal spray"
   ]
 }
 
 User:
-"Where did I leave my laptop and glasses?"
+"Did I leave the oven on?"
 
 Return:
 {
   "objects": [
-    "laptop",
-    "glasses"
+    "oven"
   ]
 }
 
-If the question is NOT asking about physical objects
-that the system could locate, return:
+If the question does NOT mention any specific physical objects, return:
 
 {}
 

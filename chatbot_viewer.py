@@ -10,7 +10,7 @@ from datetime import timedelta
 
 from google import genai
 from google.cloud import firestore, storage
-from RAG_delivery.object_search import search_object, get_latest_distinct_objects, get_results
+from RAG_delivery.object_search import search_object, get_latest_distinct_objects, get_results, parse_query
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -93,25 +93,16 @@ def ingest_object_index(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return index
 
 
-def extract_object_name(prompt: str) -> str:
-    """Extract the object name from the user's question so it can be matched in Firestore."""
-    cleaned = prompt.strip()
-    if not cleaned:
-        return ""
-
-    for keyword in ["looking for", "find", "search for", "show me", "i need", "object", "I forget", "Lost my"]:
-        if keyword in cleaned.lower():
-            match = re.search(rf"{re.escape(keyword)}\s+(.+)", cleaned, flags=re.IGNORECASE)
-            if match:
-                return match.group(1).strip("? .,:;!")
-
-    return cleaned.strip("? .,:;!")
 
 def build_gemini_prompt(query: str, search_payload: dict[str, Any]) -> str:
     """Build the prompt used to ask Gemini for the final location reply."""
     search_json = json.dumps(search_payload, indent=2, default=str)
     return (
-        "You are getting the results of a sematic search on objects. Based on the json given, describe the location of the object."
+        "You are getting the results of a semantic search for an object requested by the user. "
+        "Based on the JSON data provided, describe the location of the object as accurately as possible. "
+        "The search results array is already strictly sorted from newest to oldest. Rank 1 is deterministically the most recent sighting of the object. Focus your primary answer on Rank 1 as the current whereabouts, and optionally mention the older locations (Rank 2+) as places it was seen previously if relevant. "
+        "Pay special attention to the 'environment' description and 'scene_meta' to provide clear, spatially aware directions on where to find the object in the physical space. "
+        "IMPORTANT: DO NOT include the raw bounding box pixel coordinates in your reply, and DO NOT describe where the object is located within the image frame (e.g. avoid saying 'at the bottom center of the image'). The user can already see the image. Describe the location in the physical room using natural language only."
         "\n\nSearch payload:\n"
         f"{search_json}\n\n"
         "User question:\n"
@@ -124,7 +115,14 @@ def generate_signed_gcs_url(bucket_name: str, object_path: str) -> str:
     if not bucket_name or not object_path:
         return ""
 
-    client = storage.Client()
+    try:
+        from google.oauth2 import service_account
+        creds = service_account.Credentials.from_service_account_file(
+            os.path.join(os.path.dirname(__file__), '.secrets', 'aria-uploader-key.json')
+        )
+        client = storage.Client(credentials=creds)
+    except Exception:
+        client = storage.Client()
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(object_path)
 
@@ -190,11 +188,11 @@ def build_public_url(payload: dict[str, Any]) -> list[str]:
 
     def walk(value: Any) -> None:
         if isinstance(value, dict):
-            for key, child in value.items():
-                if key == "crop_path" and isinstance(child, str):
-                    public_urls.append(build_public_url_from_crop_path(child))
-                else:
-                    walk(child)
+            img_path = value.get("parent_image") or value.get("crop_path")
+            if img_path and isinstance(img_path, str):
+                public_urls.append(build_public_url_from_crop_path(img_path))
+            for child in value.values():
+                walk(child)
         elif isinstance(value, list):
             for item in value:
                 walk(item)
@@ -209,10 +207,11 @@ def get_crop_entries(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
     def walk(value: Any) -> None:
         if isinstance(value, dict):
-            if "crop_path" in value and isinstance(value["crop_path"], str):
+            img_path = value.get("parent_image") or value.get("crop_path")
+            if img_path and isinstance(img_path, str):
                 entries.append(
                     {
-                        "crop_path": value["crop_path"],
+                        "crop_path": img_path,
                         "bounding_box": value.get("bounding_boxes") or value.get("boundary_box") or value.get("bounding_box"),
                     }
                 )
@@ -229,7 +228,7 @@ def get_crop_entries(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def render_annotated_image(image_url: str, bounding_box: dict[str, Any] | None) -> None:
     """Render a crop image and draw a red boundary box if available."""
     if not bounding_box:
-        st.image(image_url, use_column_width=True)
+        st.image(image_url, use_container_width=True)
         return
 
     try:
@@ -242,16 +241,37 @@ def render_annotated_image(image_url: str, bounding_box: dict[str, Any] | None) 
         draw = ImageDraw.Draw(image)
 
         print(f"Drawing bounding box: {bounding_box}, path {image_url}")
-        x1 = int(bounding_box.get("x1", 0))
-        y1 = int(bounding_box.get("y1", 0))
-        x2 = int(bounding_box.get("x2", 0))
-        y2 = int(bounding_box.get("y2", 0))
+        
+        # Handle cases where bounding_box is a list of dicts instead of a single dict
+        if isinstance(bounding_box, list):
+            bbox_dict = bounding_box[0] if bounding_box else {}
+        else:
+            bbox_dict = bounding_box
+            
+        x1 = int(bbox_dict.get("x1", 0))
+        y1 = int(bbox_dict.get("y1", 0))
+        x2 = int(bbox_dict.get("x2", 0))
+        y2 = int(bbox_dict.get("y2", 0))
+
+        # Ensure valid coordinates
+        left = min(x1, x2)
+        right = max(x1, x2)
+        top = min(y1, y2)
+        bottom = max(y1, y2)
+        
+        # Scale coordinates from Gemini's 1000x1000 grid to actual image dimensions
+        img_width, img_height = image.size
+        left = int((left / 1000.0) * img_width)
+        right = int((right / 1000.0) * img_width)
+        top = int((top / 1000.0) * img_height)
+        bottom = int((bottom / 1000.0) * img_height)
 
         # Draw a red rectangle outline using the provided pixel coordinates.
-        draw.rectangle([x1, y1, x2, y2], outline="red", width=4)
-        st.image(image, use_column_width=True)
-    except Exception:
-        st.image(image_url, use_column_width=True)
+        draw.rectangle([left, top, right, bottom], outline="red", width=4)
+        st.image(image, use_container_width=True)
+    except Exception as e:
+        print(f"Error processing image: {e}")
+        st.image(image_url, use_container_width=True)
 
 
 def ask_gemini_for_reply(gemini_client, prompt: str) -> str:
@@ -270,15 +290,22 @@ def ask_gemini_for_reply(gemini_client, prompt: str) -> str:
         return ""
 
 
-def get_firestore_object(_firestore_client, prompt: str) -> dict[str, Any]:
+def get_firestore_object(_firestore_client, gemini_client, prompt: str) -> dict[str, Any]:
     """Search Firestore for a matching object and return a structured payload for model context using object_search helpers."""
     if not _firestore_client:
         return {"error": "Firestore is not configured yet. Add GCP_PROJECT to your .env file and restart the app."}
+    
+    if not gemini_client:
+        return {"error": "Gemini API key is required to parse the object name from your question."}
 
-    # Extract a concise object name from the user's prompt
-    requested_name = extract_object_name(prompt)
-    if not requested_name:
-        return {"error": "No object name could be extracted from the query."}
+    # Extract a concise object name from the user's prompt using the robust Gemini parser
+    parsed = parse_query(prompt)
+    objects = parsed.get("objects", [])
+    
+    if not objects:
+        return {"error": "No object could be extracted from your query. Try asking something like 'where is my nasal spray?'"}
+        
+    requested_name = objects[0]
 
     # Use the RAG_delivery.object_search functions to perform search and format results
     matches = search_object(requested_name)
@@ -381,7 +408,7 @@ def main() -> None:
             st.markdown(prompt)
 
         # Use object_search to produce a structured search payload, then give that JSON to Gemini
-        payload = get_firestore_object(firestore_client, prompt)
+        payload = get_firestore_object(firestore_client, gemini_client, prompt)
         crop_entries = get_crop_entries(payload)
         image_paths = [build_public_url_from_crop_path(entry["crop_path"]) for entry in crop_entries if entry.get("crop_path")]
         print(f"Normalized crop paths: {image_paths}")
