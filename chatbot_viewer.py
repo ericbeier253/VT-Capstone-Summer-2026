@@ -116,6 +116,61 @@ def build_gemini_prompt(query: str, search_payload: dict[str, Any]) -> str:
     )
 
 
+def normalize_crop_path(crop_path: str) -> str:
+    """Normalize a crop path into bucket_name/run_id/gaze_trigger."""
+    if not isinstance(crop_path, str):
+        return crop_path
+
+    path = crop_path.strip()
+    if not path:
+        return crop_path
+
+    bucket_name = os.environ.get("GCS_BUCKET") or os.environ.get("BUCKET_NAME")
+
+    if path.startswith("gs://"):
+        path = path[len("gs://") :]
+        if "/" in path:
+            bucket_name, path = path.split("/", 1)
+        else:
+            path = ""
+
+    segments = [segment for segment in path.split("/") if segment]
+    run_id = next((segment for segment in segments if segment.startswith("run_")), None)
+    gaze_trigger = next((segment for segment in segments if segment.startswith("gaze_trigger")), None)
+
+    if run_id and gaze_trigger:
+        if bucket_name:
+            return f"{bucket_name}/{run_id}/{gaze_trigger}"
+        return f"{run_id}/{gaze_trigger}"
+
+    if run_id and segments:
+        fallback_trigger = segments[-1]
+        if bucket_name:
+            return f"{bucket_name}/{run_id}/{fallback_trigger}"
+        return f"{run_id}/{fallback_trigger}"
+
+    return crop_path
+
+
+def get_normalized_crop_paths(payload: dict[str, Any]) -> list[str]:
+    """Collect normalized crop paths from the get_object JSON response without modifying it."""
+    normalized_paths: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key == "crop_path" and isinstance(child, str):
+                    normalized_paths.append(normalize_crop_path(child))
+                else:
+                    walk(child)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(payload)
+    return normalized_paths
+
+
 def ask_gemini_for_reply(gemini_client, prompt: str) -> str:
     """Ask Gemini for the final chat reply using structured search context."""
     if not gemini_client:
@@ -244,6 +299,8 @@ def main() -> None:
 
         # Use object_search to produce a structured search payload, then give that JSON to Gemini
         payload = get_firestore_object(firestore_client, prompt)
+        image_paths = get_normalized_crop_paths(payload)
+        print(f"Normalized crop paths: {image_paths}")
 
         gemini_prompt_text = ""
         gemini_reply = ""

@@ -109,8 +109,15 @@ def load_env():
                 continue
 
             key, value = line.split("=", 1)
+            key = key.strip()
 
-            os.environ[key.strip()] = (
+            if key.startswith("export "):
+                key = key[len("export "):].strip()
+
+            if not key:
+                continue
+
+            os.environ[key] = (
                 value.strip()
                 .strip('"')
                 .strip("'")
